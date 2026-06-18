@@ -290,6 +290,14 @@ test("chat.message and tool.execute.before: optional blocking throws only before
     /Silmaril Firewall classified this event as malicious/,
   );
 
+  const blockedCallOutput = { title: "done", output: "blocked tool response", metadata: {} };
+  await hooks["tool.execute.after"](
+    { tool: "bash", sessionID: "ses_1", callID: "call_1", args: {} },
+    blockedCallOutput,
+  );
+  assert.equal(blockedCallOutput.output.includes('"toolCall"'), false);
+  assert.ok(blockedCallOutput.output.includes('"toolResponse"'));
+
   const output = { title: "done", output: "bad tool response", metadata: {} };
   await hooks["tool.execute.after"](
     { tool: "bash", sessionID: "ses_1", callID: "call_2", args: {} },
@@ -322,6 +330,7 @@ test("tool hooks: before caches call summary and after appends combined compact 
   assert.equal(output.metadata.existing, true);
   assert.ok(output.metadata.silmarilFirewall.toolCall);
   assert.ok(output.metadata.silmarilFirewall.toolResponse);
+  assert.equal(globalThis.__silmarilFirewallInstances.length, 1);
 });
 
 test("experimental.text.complete: classifies assistant output without mutating text", async () => {

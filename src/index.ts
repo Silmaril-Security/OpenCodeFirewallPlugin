@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { platform } from "node:os";
 import type {
@@ -63,13 +64,14 @@ type ToolClassificationState = {
   toolCall?: CompactContext;
 };
 type DebugLogger = (event: string, fields?: Record<string, unknown>) => Promise<void>;
-
-let sdkLoadPromise: Promise<FirewallSdk | undefined> | undefined;
-let syntheticPartCounter = 0;
+type FirewallRuntime = {
+  getClient(config: RuntimeConfig): Promise<FirewallClient | undefined>;
+};
 
 export const SilmarilFirewallPlugin: Plugin = async (input, options = {}) => {
   const toolClassifications = new Map<string, ToolClassificationState>();
   const logger = makeDebugLogger(input, options, process.env);
+  const firewallRuntime = createFirewallRuntime();
 
   return {
     tool: {
@@ -117,7 +119,7 @@ export const SilmarilFirewallPlugin: Plugin = async (input, options = {}) => {
           variant: hookInput.variant,
         }),
       };
-      const result = await classifyTarget(target, options, process.env, logger);
+      const result = await classifyTarget(target, options, process.env, logger, firewallRuntime);
       if (!result) return;
 
       if (isBlockingEnabled(options, process.env) && isMaliciousClassification(result)) {
@@ -140,16 +142,16 @@ export const SilmarilFirewallPlugin: Plugin = async (input, options = {}) => {
           toolName: hookInput.tool,
         }),
       };
-      const result = await classifyTarget(target, options, process.env, logger);
+      const result = await classifyTarget(target, options, process.env, logger, firewallRuntime);
       if (!result) return;
-
-      toolClassifications.set(cacheKey(hookInput.sessionID, hookInput.callID), {
-        toolCall: buildCompactContext(target, result),
-      });
 
       if (isBlockingEnabled(options, process.env) && isMaliciousClassification(result)) {
         throw new SilmarilFirewallBlockedError(formatBlockReason(result));
       }
+
+      toolClassifications.set(cacheKey(hookInput.sessionID, hookInput.callID), {
+        toolCall: buildCompactContext(target, result),
+      });
     },
 
     "tool.execute.after": async (hookInput, output) => {
@@ -165,7 +167,7 @@ export const SilmarilFirewallPlugin: Plugin = async (input, options = {}) => {
           toolName: hookInput.tool,
         }),
       };
-      const result = await classifyTarget(target, options, process.env, logger);
+      const result = await classifyTarget(target, options, process.env, logger, firewallRuntime);
       const key = cacheKey(hookInput.sessionID, hookInput.callID);
       const previous = toolClassifications.get(key);
       toolClassifications.delete(key);
@@ -187,7 +189,7 @@ export const SilmarilFirewallPlugin: Plugin = async (input, options = {}) => {
           partID: hookInput.partID,
         }),
       };
-      await classifyTarget(target, options, process.env, logger);
+      await classifyTarget(target, options, process.env, logger, firewallRuntime);
     },
   };
 };
@@ -451,6 +453,7 @@ async function classifyTarget(
   options: PluginOptions,
   env: RuntimeSource,
   logger: DebugLogger,
+  firewallRuntime: FirewallRuntime,
 ): Promise<ClassificationResult | undefined> {
   const debugEnabled = isDebugEnabled(options, env);
   const config = resolveRuntimeConfig(options, env);
@@ -463,18 +466,13 @@ async function classifyTarget(
     return undefined;
   }
 
-  const sdk = await loadFirewallSdk();
-  if (!sdk) {
+  const firewall = await firewallRuntime.getClient(config);
+  if (!firewall) {
     await logger("sdk_import_failure", { hookEventName: target.hookEventName, hook: target.hook });
     return undefined;
   }
 
   try {
-    const firewall = new sdk.Firewall({
-      apiKey: config.apiKey,
-      apiUrl: config.apiUrl,
-      timeoutMs: config.timeoutMs,
-    });
     const result = await firewall.classify(target.text, {
       hook: target.hook,
       toolName: target.toolName,
@@ -530,16 +528,55 @@ function makeDebugLogger(input: PluginInput, options: RuntimeSource, env: Runtim
   };
 }
 
-async function loadFirewallSdk(): Promise<FirewallSdk | undefined> {
-  sdkLoadPromise ??= import("@silmaril-security/sdk")
-    .then((module) => {
-      const maybeFirewall = (module as Record<string, unknown>).Firewall;
-      return typeof maybeFirewall === "function"
-        ? { Firewall: maybeFirewall as FirewallConstructor }
-        : undefined;
-    })
-    .catch(() => undefined);
-  return sdkLoadPromise;
+function createFirewallRuntime(): FirewallRuntime {
+  let sdkLoadPromise: Promise<FirewallSdk | undefined> | undefined;
+  let clientCache: { key: string; client: FirewallClient } | undefined;
+
+  async function loadFirewallSdk(): Promise<FirewallSdk | undefined> {
+    sdkLoadPromise ??= import("@silmaril-security/sdk")
+      .then((module) => {
+        const maybeFirewall = (module as Record<string, unknown>).Firewall;
+        return typeof maybeFirewall === "function"
+          ? { Firewall: maybeFirewall as FirewallConstructor }
+          : undefined;
+      })
+      .catch(() => {
+        sdkLoadPromise = undefined;
+        return undefined;
+      });
+    const sdk = await sdkLoadPromise;
+    if (!sdk) {
+      sdkLoadPromise = undefined;
+    }
+    return sdk;
+  }
+
+  return {
+    async getClient(config) {
+      const key = stableStringify({
+        apiKey: config.apiKey,
+        apiUrl: config.apiUrl,
+        timeoutMs: config.timeoutMs,
+      });
+      if (clientCache?.key === key) {
+        return clientCache.client;
+      }
+
+      const sdk = await loadFirewallSdk();
+      if (!sdk) {
+        clientCache = undefined;
+        return undefined;
+      }
+
+      const client = new sdk.Firewall({
+        apiKey: config.apiKey,
+        apiUrl: config.apiUrl,
+        timeoutMs: config.timeoutMs,
+      });
+      clientCache = { key, client };
+      return client;
+    },
+  };
 }
 
 function readRecord(value: unknown): Record<string, unknown> | undefined {
@@ -636,8 +673,7 @@ function omitUndefined<T extends Record<string, unknown>>(record: T): Record<str
 }
 
 function nextSyntheticPartId(): string {
-  syntheticPartCounter += 1;
-  return `prt_silmaril_${Date.now().toString(36)}_${syntheticPartCounter.toString(36)}`;
+  return `prt_silmaril_${randomUUID().replace(/-/g, "")}`;
 }
 
 function cacheKey(sessionID: string, callID: string): string {
