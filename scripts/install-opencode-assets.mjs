@@ -22,7 +22,7 @@ async function copyTree(relativeRoot) {
       continue;
     }
 
-    const relativePath = path.join(entry.parentPath ?? sourceDir, entry.name).slice(sourceDir.length + 1);
+    const relativePath = path.join(entry.parentPath, entry.name).slice(sourceDir.length + 1);
     const sourcePath = path.join(sourceDir, relativePath);
     const targetPath = path.join(configRoot, relativeRoot, relativePath);
     await mkdir(path.dirname(targetPath), { recursive: true });
