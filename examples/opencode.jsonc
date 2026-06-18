@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    [
+      "file:///absolute/path/to/OpenCodeFirewallPlugin/dist/index.js",
+      {
+        "silmaril_api_url": "https://...",
+        "silmaril_api_key": "...",
+        "timeout_ms": 2500,
+        "block_malicious": false,
+        "debug": false
+      }
+    ]
+  ]
+}
