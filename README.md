@@ -39,6 +39,17 @@ Then add the plugin to `opencode.json`:
 }
 ```
 
+Install the OpenCode-visible skill and slash command into your global OpenCode config:
+
+```sh
+npm run install:opencode-assets
+```
+
+This installs:
+
+- `~/.config/opencode/skills/silmaril-demo/SKILL.md`
+- `~/.config/opencode/commands/silmaril-demo.md`
+
 Use environment variables instead of committed config values when possible:
 
 ```sh
@@ -63,6 +74,13 @@ Set `debug=true` or `SILMARIL_DEBUG=true` to write compact diagnostic summaries 
 ## Demo
 
 The plugin exposes a `silmaril_demo` tool that returns the public Firewall demo URL and can optionally open it with the system browser. It never places API keys in URLs, logs, or tool output.
+
+OpenCode does not discover skills from plugin package directories. The packaged OpenCode assets install a visible `silmaril-demo` skill and `/silmaril-demo` command into the OpenCode config directory. After running `npm run install:opencode-assets`, start a new OpenCode session and use:
+
+```text
+/silmaril-demo
+/silmaril-demo playground
+```
 
 You can also run the launcher directly:
 
