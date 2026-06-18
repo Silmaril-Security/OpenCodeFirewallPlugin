@@ -366,7 +366,7 @@ test("run hooks: missing config, empty payloads, and classifier errors fail open
   assert.equal(errorOutput.parts.length, 1);
 });
 
-test("demo launcher and tool: builds public URLs without credentials", async () => {
+test("demo launcher, tool, and OpenCode assets build public URLs without credentials", async () => {
   assert.equal(t.buildDemoUrl("https://preview.example/base"), "https://preview.example/demo/setup-complete");
   assert.equal(t.buildDemoUrl("preview.example", "playground"), "https://preview.example/demo/playground");
   const hooks = await mod.SilmarilFirewallPlugin(mockInput(), pluginOptions({
@@ -379,6 +379,18 @@ test("demo launcher and tool: builds public URLs without credentials", async () 
   }, {});
   assert.ok(result.output.includes("https://preview.example/demo/playground"));
   assert.equal(result.output.includes("secret-key"), false);
+
+  const skill = await readFile(path.join(repoRoot, "opencode", "skills", "silmaril-demo", "SKILL.md"), "utf8");
+  assert.ok(skill.startsWith("---\nname: silmaril-demo\n"));
+  assert.ok(skill.includes("silmaril_demo"));
+  assert.ok(skill.includes("Do not print the Silmaril API key"));
+  assert.equal(skill.includes("secret-key"), false);
+
+  const command = await readFile(path.join(repoRoot, "opencode", "commands", "silmaril-demo.md"), "utf8");
+  assert.ok(command.startsWith("---\ndescription: Open the public Silmaril Firewall demo\n---"));
+  assert.ok(command.includes("silmaril-demo skill"));
+  assert.ok(command.includes("silmaril_demo"));
+  assert.equal(command.includes("secret-key"), false);
 });
 
 test("source and dependency invariants: SDK 0.4.2 and package is unpublished until licensed", async () => {
@@ -386,6 +398,8 @@ test("source and dependency invariants: SDK 0.4.2 and package is unpublished unt
   assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.4.2");
   assert.equal(packageJson.private, true);
   assert.equal(packageJson.license, "UNLICENSED");
+  assert.ok(packageJson.files.includes("opencode"));
+  assert.ok(packageJson.files.includes("scripts/install-opencode-assets.mjs"));
 
   const source = await readFile(path.join(repoRoot, "src", "index.ts"), "utf8");
   assert.equal(source.includes("rawPrompt"), false);

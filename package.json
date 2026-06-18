@@ -16,11 +16,14 @@
   "files": [
     "dist",
     "examples",
+    "opencode",
+    "scripts/install-opencode-assets.mjs",
     "scripts/open-playground.mjs",
     "README.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "install:opencode-assets": "node scripts/install-opencode-assets.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node scripts/run-unit-tests.mjs",
     "pack:dry": "npm pack --dry-run",
