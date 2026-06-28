@@ -377,7 +377,9 @@ test("demo launcher, tool, and OpenCode assets build public URLs without credent
     open: false,
     base_url: "https://preview.example/base",
   }, {});
-  assert.ok(result.output.includes("https://preview.example/demo/playground"));
+  const demoUrl = new URL(JSON.parse(result.output).url);
+  assert.equal(demoUrl.origin, "https://preview.example");
+  assert.equal(demoUrl.pathname, "/demo/playground");
   assert.equal(result.output.includes("secret-key"), false);
 
   const skill = await readFile(path.join(repoRoot, "opencode", "skills", "silmaril-demo", "SKILL.md"), "utf8");
