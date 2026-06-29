@@ -122,7 +122,7 @@ export const SilmarilFirewallPlugin: Plugin = async (input, options = {}) => {
       const result = await classifyTarget(target, options, process.env, logger, firewallRuntime);
       if (!result) return;
 
-      if (isBlockingEnabled(options, process.env) && isMaliciousClassification(result)) {
+      if (isBlockingEnabled(options, process.env) && shouldBlockClassification(result)) {
         throw new SilmarilFirewallBlockedError(formatBlockReason(result));
       }
 
@@ -145,7 +145,7 @@ export const SilmarilFirewallPlugin: Plugin = async (input, options = {}) => {
       const result = await classifyTarget(target, options, process.env, logger, firewallRuntime);
       if (!result) return;
 
-      if (isBlockingEnabled(options, process.env) && isMaliciousClassification(result)) {
+      if (isBlockingEnabled(options, process.env) && shouldBlockClassification(result)) {
         throw new SilmarilFirewallBlockedError(formatBlockReason(result));
       }
 
@@ -175,6 +175,10 @@ export const SilmarilFirewallPlugin: Plugin = async (input, options = {}) => {
 
       const toolResponse = result ? buildCompactContext(target, result) : undefined;
       const combined = buildCombinedToolContext(previous?.toolCall, toolResponse);
+      if (result && isBlockingEnabled(options, process.env) && shouldBlockClassification(result)) {
+        replaceWithBlockedOutput(output, target, result, combined);
+        return;
+      }
       appendFirewallContext(output, combined);
     },
 
@@ -189,7 +193,10 @@ export const SilmarilFirewallPlugin: Plugin = async (input, options = {}) => {
           partID: hookInput.partID,
         }),
       };
-      await classifyTarget(target, options, process.env, logger, firewallRuntime);
+      const result = await classifyTarget(target, options, process.env, logger, firewallRuntime);
+      if (result && isBlockingEnabled(options, process.env) && shouldBlockClassification(result)) {
+        output.text = buildBlockedReplacement(target, result);
+      }
     },
   };
 };
@@ -345,6 +352,40 @@ export function appendFirewallContext(
   };
 }
 
+export function replaceWithBlockedOutput(
+  output: { title?: string; output: string; metadata: unknown },
+  target: HookTarget,
+  result: ClassificationResult,
+  context: CompactContext,
+): void {
+  output.title = "Silmaril Firewall blocked tool output";
+  output.output = buildBlockedReplacement(target, result);
+  output.metadata = {
+    ...(readRecord(output.metadata) ?? {}),
+    silmarilFirewall: {
+      ...context.silmarilFirewall,
+      blocked: true,
+    },
+  };
+}
+
+export function buildBlockedReplacement(target: HookTarget, result: ClassificationResult): string {
+  const replacement = {
+    silmarilFirewall: omitUndefined({
+      blocked: true,
+      hook: target.hook,
+      opencodeHookEvent: target.hookEventName,
+      toolName: target.toolName,
+      callId: target.callId,
+      reason: formatBlockReason(result),
+      classification: summarizeClassification(result),
+    }),
+  };
+  return "Silmaril Firewall blocked malicious content before downstream model consumption:\n```json\n"
+    + JSON.stringify(replacement, null, 2)
+    + "\n```";
+}
+
 export function formatContextObject(context: CompactContext): string {
   return "Silmaril Firewall classification:\n```json\n"
     + JSON.stringify(context, null, 2)
@@ -376,13 +417,24 @@ export function buildLogSummary(target: HookTarget, result: ClassificationResult
   });
 }
 
-export function isMaliciousClassification(result: ClassificationResult): boolean {
+export function shouldBlockClassification(result: ClassificationResult): boolean {
   const prediction = readString(result.prediction)?.toLowerCase();
+  if (prediction === "benign") {
+    return false;
+  }
+  const primaryOutcome = readString(result.primaryOutcome)?.toLowerCase();
+  if (primaryOutcome === "benign") {
+    return false;
+  }
   if (prediction === "malicious") {
-    return true;
+    const score = readFiniteNumber(result.score);
+    const threshold = readFiniteNumber(result.threshold);
+    return score !== undefined && threshold !== undefined ? score >= threshold : true;
   }
   return typeof result.blocked === "boolean" ? result.blocked : false;
 }
+
+export const isMaliciousClassification = shouldBlockClassification;
 
 export function formatBlockReason(result: ClassificationResult): string {
   const summary = summarizeClassification(result);
@@ -688,9 +740,12 @@ export const __testInternals = {
   buildCompactContext,
   buildCombinedToolContext,
   appendFirewallContext,
+  replaceWithBlockedOutput,
+  buildBlockedReplacement,
   formatContextObject,
   summarizeClassification,
   buildLogSummary,
+  shouldBlockClassification,
   isMaliciousClassification,
   formatBlockReason,
   stableStringify,

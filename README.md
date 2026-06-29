@@ -2,7 +2,7 @@
 
 Silmaril Firewall context hooks for opencode.
 
-This plugin classifies opencode lifecycle events with Silmaril Firewall. It defaults to fail-open shadow/pass-through mode, adds compact classification context where opencode supports it, and only blocks supported pre-execution events when `block_malicious=true`.
+This plugin classifies opencode lifecycle events with Silmaril Firewall. It defaults to fail-open shadow/pass-through mode, adds compact classification context where opencode supports it, and blocks malicious content at every supported enforcement boundary when `block_malicious=true`.
 
 Silmaril is an AI application firewall that protects agent execution. It evaluates intent, application context, tool calls, and accumulated execution state together before harmful outcomes materialize.
 
@@ -67,7 +67,7 @@ Runtime configuration is resolved in this order:
 1. opencode plugin tuple options: `silmaril_api_key`, `silmaril_api_url`, `timeout_ms`, `block_malicious`, and `debug`.
 2. Process environment variables: `SILMARIL_API_KEY`, `SILMARIL_API_URL`, `SILMARIL_TIMEOUT_MS`, `SILMARIL_BLOCK_MALICIOUS`, and `SILMARIL_DEBUG`.
 
-If either API key or API URL is missing, the plugin exits hooks without output. `timeout_ms` defaults to `2500` and accepts values from `250` through `10000`. `block_malicious` defaults to `false`; set it to `true` only when you want malicious user-message and pre-tool classifications to block. Classifier failures, SDK import failures, malformed payloads, empty extracted text, and timeouts fail open.
+If either API key or API URL is missing, the plugin exits hooks without output. `timeout_ms` defaults to `2500` and accepts values from `250` through `10000`. `block_malicious` defaults to `false`; set it to `true` only when you want malicious user-message, tool-call, tool-output, and final assistant-output classifications to block where opencode exposes an enforcement surface. Classifier failures, SDK import failures, malformed payloads, empty extracted text, and timeouts fail open.
 
 Set `debug=true` or `SILMARIL_DEBUG=true` to write compact diagnostic summaries through `client.app.log()`. Debug logs omit raw prompts, tool inputs, tool outputs, and assistant text.
 
@@ -102,8 +102,8 @@ SILMARIL_DEMO_BASE_URL="http://localhost:3001" node scripts/open-playground.mjs
 | --- | --- | --- | --- | --- |
 | `chat.message` | concatenated user text parts | `user_input` | append synthetic context part | block malicious user message |
 | `tool.execute.before` | stable-serialized tool args | `tool_call` | classify and cache compact summary | block malicious tool call |
-| `tool.execute.after` | tool output string | `tool_response` | append compact tool-call/tool-response summary | never blocks |
-| `experimental.text.complete` | assistant text | `llm_output` | telemetry only | never blocks |
+| `tool.execute.after` | tool output string | `tool_response` | append compact tool-call/tool-response summary | replace malicious tool output |
+| `experimental.text.complete` | assistant text | `llm_output` | telemetry only | replace malicious final assistant output |
 
 opencode does not expose direct `Stop` or `SubagentStop` parity hooks. Assistant output classification is implemented through `experimental.text.complete`.
 
@@ -133,6 +133,8 @@ Model-visible context uses a compact JSON object and never includes raw classifi
 
 `classification` includes the compact Silmaril summary fields used by opencode: `prediction`, `score`, `threshold`, `primaryOutcome`, `outcomeScores`, `detectorScores`, and `detectorCounts`. Missing score maps serialize as empty objects.
 
+When optional blocking is enabled, post-execution hooks replace malicious tool or assistant output with a safe Silmaril Firewall summary. The replacement includes hook metadata, score, threshold, and primary outcome, but never includes the original tool output or assistant text.
+
 ## Development
 
 ```sh
@@ -143,7 +145,7 @@ npm run build
 npm pack --dry-run
 ```
 
-The package pins `@silmaril-security/sdk` to `0.4.2`. Unit tests stub the SDK and cover config loading, opencode event mapping, shadow behavior, optional pre-execution enforcement, fail-open behavior, no raw payload leakage, demo launcher behavior, and the SDK version invariant.
+The package pins `@silmaril-security/sdk` to `0.4.2`. Unit tests stub the SDK and cover config loading, opencode event mapping, shadow behavior, optional enforcement across supported boundaries, fail-open behavior, no raw payload leakage, demo launcher behavior, and the SDK version invariant.
 
 ## References
 
