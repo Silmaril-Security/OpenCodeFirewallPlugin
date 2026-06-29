@@ -144,14 +144,14 @@ export const SilmarilFirewallPlugin: Plugin = async (input, options = {}) => {
       };
       const result = await classifyTarget(target, options, process.env, logger, firewallRuntime);
       if (!result) return;
+      const key = cacheKey(hookInput.sessionID, hookInput.callID);
+      toolClassifications.set(key, {
+        toolCall: buildCompactContext(target, result),
+      });
 
       if (isBlockingEnabled(options, process.env) && shouldBlockClassification(result)) {
         throw new SilmarilFirewallBlockedError(formatBlockReason(result));
       }
-
-      toolClassifications.set(cacheKey(hookInput.sessionID, hookInput.callID), {
-        toolCall: buildCompactContext(target, result),
-      });
     },
 
     "tool.execute.after": async (hookInput, output) => {
@@ -422,18 +422,18 @@ export function shouldBlockClassification(result: ClassificationResult): boolean
   if (prediction === "benign") {
     return false;
   }
-  const primaryOutcome = readString(result.primaryOutcome)?.toLowerCase();
-  if (primaryOutcome === "benign") {
-    return false;
+  const score = readFiniteNumber(result.score);
+  const threshold = readFiniteNumber(result.threshold);
+  if (score !== undefined && threshold !== undefined) {
+    return score >= threshold;
   }
   if (prediction === "malicious") {
-    const score = readFiniteNumber(result.score);
-    const threshold = readFiniteNumber(result.threshold);
-    return score !== undefined && threshold !== undefined ? score >= threshold : true;
+    return true;
   }
   return typeof result.blocked === "boolean" ? result.blocked : false;
 }
 
+/** @deprecated Use shouldBlockClassification. */
 export const isMaliciousClassification = shouldBlockClassification;
 
 export function formatBlockReason(result: ClassificationResult): string {

@@ -324,6 +324,8 @@ test("chat.message and tool.execute.before: optional blocking throws before exec
   assert.ok(blockedCallOutput.output.includes('"blocked": true'));
   assert.equal(blockedCallOutput.output.includes("blocked tool response"), false);
   assert.equal(blockedCallOutput.metadata.silmarilFirewall.blocked, true);
+  assert.ok(blockedCallOutput.metadata.silmarilFirewall.toolCall);
+  assert.ok(blockedCallOutput.metadata.silmarilFirewall.toolResponse);
 
   const output = { title: "done", output: "bad tool response", metadata: {} };
   await hooks["tool.execute.after"](
@@ -335,7 +337,7 @@ test("chat.message and tool.execute.before: optional blocking throws before exec
   assert.equal(output.output.includes("bad tool response"), false);
 });
 
-test("blocking decision respects explicit benign outcomes and thresholds", () => {
+test("blocking decision respects benign predictions and thresholds", () => {
   assert.equal(t.shouldBlockClassification({
     prediction: "BENIGN",
     score: 0.99,
@@ -347,7 +349,7 @@ test("blocking decision respects explicit benign outcomes and thresholds", () =>
     score: 0.99,
     threshold: 0.5,
     primaryOutcome: "benign",
-  }), false);
+  }), true);
   assert.equal(t.shouldBlockClassification({
     prediction: "MALICIOUS",
     score: 0.49,
