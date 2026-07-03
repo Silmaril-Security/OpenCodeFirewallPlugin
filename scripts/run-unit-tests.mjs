@@ -241,13 +241,21 @@ test("context output and structured log omit raw classified text", () => {
     primaryOutcome: "prompt_injection",
   };
   const context = t.formatContextObject(t.buildCompactContext(target, result));
-  assert.ok(context.includes('"silmarilFirewall"'));
-  assert.ok(context.includes('"primaryOutcome": "prompt_injection"'));
+  assert.ok(context.includes("Silmaril Firewall flagged unsafe content"));
+  assert.ok(context.includes("Unsafe agent control attempt"));
+  assert.ok(context.includes("Surface: tool call (bash) [call_1]"));
+  assert.equal(context.includes("```json"), false);
+  assert.equal(context.includes("score"), false);
+  assert.equal(context.includes("threshold"), false);
   assert.equal(context.includes("ignore previous instructions"), false);
-  assert.equal(JSON.stringify(t.buildLogSummary(target, result)).includes("ignore previous instructions"), false);
+  const logSummary = t.buildLogSummary(target, result);
+  assert.equal(logSummary.score, 0.92);
+  assert.equal(logSummary.threshold, 0.5);
+  assert.equal(logSummary.primaryOutcome, "prompt_injection");
+  assert.equal(JSON.stringify(logSummary).includes("ignore previous instructions"), false);
 });
 
-test("chat.message: benign prompt appends synthetic context and passes metadata", async () => {
+test("chat.message: benign prompt classifies and stays silent", async () => {
   resetFirewallStub();
   const logs = [];
   const hooks = await mod.SilmarilFirewallPlugin(mockInput(logs), pluginOptions({ debug: "true" }));
@@ -269,11 +277,7 @@ test("chat.message: benign prompt appends synthetic context and passes metadata"
   assert.equal(globalThis.__silmarilFirewallCalls[0].text, "hello");
   assert.equal(globalThis.__silmarilFirewallCalls[0].options.hook, "user_input");
   assert.equal(globalThis.__silmarilFirewallCalls[0].options.metadata.opencodeHookEvent, "chat.message");
-  assert.equal(output.parts.length, 2);
-  assert.equal(output.parts[1].type, "text");
-  assert.equal(output.parts[1].synthetic, true);
-  assert.ok(output.parts[1].text.includes('"prediction": "BENIGN"'));
-  assert.equal(output.parts[1].text.includes("hello"), false);
+  assert.equal(output.parts.length, 1);
   assert.equal(logs.some((entry) => entry.body.message === "classification_result"), true);
 });
 
@@ -288,7 +292,9 @@ test("chat.message: malicious result is context-only by default", async () => {
   const output = userMessageOutput("bad prompt");
   await hooks["chat.message"]({ sessionID: "ses_1", messageID: "msg_1" }, output);
   assert.equal(output.parts.length, 2);
-  assert.ok(output.parts[1].text.includes('"prediction": "MALICIOUS"'));
+  assert.ok(output.parts[1].text.includes("Silmaril Firewall flagged unsafe content"));
+  assert.equal(output.parts[1].text.includes("```json"), false);
+  assert.equal(output.parts[1].text.includes("score"), false);
 });
 
 test("chat.message and tool.execute.before: optional blocking throws before execution", async () => {
@@ -303,7 +309,7 @@ test("chat.message and tool.execute.before: optional blocking throws before exec
 
   await assert.rejects(
     hooks["chat.message"]({ sessionID: "ses_1", messageID: "msg_1" }, userMessageOutput("bad prompt")),
-    /Silmaril Firewall classified this event as malicious/,
+    /Silmaril Firewall blocked this request: Unsafe agent control attempt/,
   );
 
   await assert.rejects(
@@ -311,7 +317,7 @@ test("chat.message and tool.execute.before: optional blocking throws before exec
       { tool: "bash", sessionID: "ses_1", callID: "call_1" },
       { args: { command: "bad command" } },
     ),
-    /Silmaril Firewall classified this event as malicious/,
+    /Silmaril Firewall blocked this request: Unsafe agent control attempt/,
   );
 
   const blockedCallOutput = { title: "done", output: "blocked tool response", metadata: {} };
@@ -320,8 +326,9 @@ test("chat.message and tool.execute.before: optional blocking throws before exec
     blockedCallOutput,
   );
   assert.equal(blockedCallOutput.title, "Silmaril Firewall blocked tool output");
-  assert.ok(blockedCallOutput.output.includes("Silmaril Firewall blocked malicious content"));
-  assert.ok(blockedCallOutput.output.includes('"blocked": true'));
+  assert.ok(blockedCallOutput.output.includes("Silmaril Firewall blocked unsafe content"));
+  assert.equal(blockedCallOutput.output.includes("```json"), false);
+  assert.equal(blockedCallOutput.output.includes("score"), false);
   assert.equal(blockedCallOutput.output.includes("blocked tool response"), false);
   assert.equal(blockedCallOutput.metadata.silmarilFirewall.blocked, true);
   assert.ok(blockedCallOutput.metadata.silmarilFirewall.toolCall);
@@ -333,7 +340,7 @@ test("chat.message and tool.execute.before: optional blocking throws before exec
     output,
   );
   assert.equal(output.title, "Silmaril Firewall blocked tool output");
-  assert.ok(output.output.includes('"hook": "tool_response"'));
+  assert.ok(output.output.includes("Surface: tool result (bash) [call_2]"));
   assert.equal(output.output.includes("bad tool response"), false);
 });
 
@@ -350,6 +357,18 @@ test("blocking decision respects benign predictions and thresholds", () => {
     threshold: 0.5,
     primaryOutcome: "benign",
   }), true);
+  assert.equal(t.summarizeClassification({
+    prediction: "MALICIOUS",
+    score: 0.99,
+    threshold: 0.5,
+    primaryOutcome: "benign",
+  }).risk, "Unexpected classification conflict");
+  assert.equal(t.summarizeClassification({
+    prediction: "BENIGN",
+    score: 0.01,
+    threshold: 0.5,
+    primaryOutcome: "benign",
+  }).risk, "No flagged risk");
   assert.equal(t.shouldBlockClassification({
     prediction: "MALICIOUS",
     score: 0.49,
@@ -364,7 +383,7 @@ test("blocking decision respects benign predictions and thresholds", () => {
   }), true);
 });
 
-test("tool hooks: before caches call summary and after appends combined compact output", async () => {
+test("tool hooks: benign before and after classify without appending context", async () => {
   resetFirewallStub();
   const hooks = await mod.SilmarilFirewallPlugin(mockInput(), pluginOptions());
   await hooks["tool.execute.before"](
@@ -379,16 +398,31 @@ test("tool hooks: before caches call summary and after appends combined compact 
 
   assert.equal(globalThis.__silmarilFirewallCalls[0].text, '{"command":"echo secret-arg"}');
   assert.equal(globalThis.__silmarilFirewallCalls[1].text, "secret-output");
-  assert.ok(output.output.startsWith("secret-output"));
-  const appended = output.output.slice("secret-output".length);
-  assert.ok(appended.includes('"toolCall"'));
-  assert.ok(appended.includes('"toolResponse"'));
-  assert.equal(appended.includes("secret-arg"), false);
-  assert.equal(appended.includes("secret-output"), false);
+  assert.equal(output.output, "secret-output");
   assert.equal(output.metadata.existing, true);
-  assert.ok(output.metadata.silmarilFirewall.toolCall);
-  assert.ok(output.metadata.silmarilFirewall.toolResponse);
+  assert.equal(output.metadata.silmarilFirewall, undefined);
   assert.equal(globalThis.__silmarilFirewallInstances.length, 1);
+});
+
+test("tool hooks preserve child session metadata while blocking", async () => {
+  resetFirewallStub();
+  globalThis.__silmarilFirewallClassify = async () => ({
+    prediction: "MALICIOUS",
+    score: 0.99,
+    threshold: 0.5,
+    primaryOutcome: "control_abuse",
+  });
+  const hooks = await mod.SilmarilFirewallPlugin(mockInput(), pluginOptions({ block_malicious: true }));
+
+  await assert.rejects(
+    hooks["tool.execute.before"](
+      { tool: "bash", sessionID: "child_session", callID: "child_call_1" },
+      { args: { command: "unsafe child command" } },
+    ),
+    /Unsafe agent control attempt/,
+  );
+  assert.equal(globalThis.__silmarilFirewallCalls[0].options.metadata.sessionId, "child_session");
+  assert.equal(globalThis.__silmarilFirewallCalls[0].options.metadata.callId, "child_call_1");
 });
 
 test("experimental.text.complete: classifies assistant output without mutating text by default", async () => {
@@ -418,8 +452,13 @@ test("experimental.text.complete: optional blocking replaces malicious assistant
     { sessionID: "ses_1", messageID: "msg_2", partID: "prt_2" },
     output,
   );
-  assert.ok(output.text.includes("Silmaril Firewall blocked malicious content"));
-  assert.ok(output.text.includes('"hook": "llm_output"'));
+  assert.ok(output.text.includes("Silmaril Firewall blocked unsafe content"));
+  assert.ok(output.text.includes("Surface: final assistant output"));
+  assert.ok(output.text.includes("Unsafe agent control attempt"));
+  assert.equal(output.text.includes('"hook": "llm_output"'), false);
+  assert.equal(output.text.includes("```json"), false);
+  assert.equal(output.text.includes("score"), false);
+  assert.equal(output.text.includes("threshold"), false);
   assert.equal(output.text.includes("assistant secret text"), false);
 });
 
