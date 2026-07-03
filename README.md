@@ -107,7 +107,7 @@ SILMARIL_DEMO_BASE_URL="http://localhost:3001" node scripts/open-playground.mjs
 | `tool.execute.after` | tool output string | `tool_response` | append readable feedback only for blocked call/result paths | replace malicious tool output |
 | `experimental.text.complete` | assistant text | `llm_output` | telemetry only | replace malicious final assistant output |
 
-opencode does not expose direct `Stop` or `SubagentStop` parity hooks. Assistant output classification is implemented through `experimental.text.complete`. Child sessions created by the `task` tool run through the same server hooks under their own `sessionID`, so child tool calls, child tool results, and child final output are scanned in the child execution path.
+opencode does not expose direct `Stop` or `SubagentStop` parity hooks. Assistant output classification is implemented through `experimental.text.complete`. opencode dispatches child sessions created by the `task` tool through the same server hook surface under their own `sessionID`; the plugin treats those events the same as parent events, and its regression tests assert that received child `sessionID`/`callID` values are preserved through classification and blocking.
 
 ## Context Output
 

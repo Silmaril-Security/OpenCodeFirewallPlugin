@@ -248,7 +248,11 @@ test("context output and structured log omit raw classified text", () => {
   assert.equal(context.includes("score"), false);
   assert.equal(context.includes("threshold"), false);
   assert.equal(context.includes("ignore previous instructions"), false);
-  assert.equal(JSON.stringify(t.buildLogSummary(target, result)).includes("ignore previous instructions"), false);
+  const logSummary = t.buildLogSummary(target, result);
+  assert.equal(logSummary.score, 0.92);
+  assert.equal(logSummary.threshold, 0.5);
+  assert.equal(logSummary.primaryOutcome, "prompt_injection");
+  assert.equal(JSON.stringify(logSummary).includes("ignore previous instructions"), false);
 });
 
 test("chat.message: benign prompt classifies and stays silent", async () => {
@@ -353,6 +357,18 @@ test("blocking decision respects benign predictions and thresholds", () => {
     threshold: 0.5,
     primaryOutcome: "benign",
   }), true);
+  assert.equal(t.summarizeClassification({
+    prediction: "MALICIOUS",
+    score: 0.99,
+    threshold: 0.5,
+    primaryOutcome: "benign",
+  }).risk, "Unexpected classification conflict");
+  assert.equal(t.summarizeClassification({
+    prediction: "BENIGN",
+    score: 0.01,
+    threshold: 0.5,
+    primaryOutcome: "benign",
+  }).risk, "No flagged risk");
   assert.equal(t.shouldBlockClassification({
     prediction: "MALICIOUS",
     score: 0.49,
@@ -388,7 +404,7 @@ test("tool hooks: benign before and after classify without appending context", a
   assert.equal(globalThis.__silmarilFirewallInstances.length, 1);
 });
 
-test("subagent child session tool hooks are scanned and block inside the child path", async () => {
+test("tool hooks preserve child session metadata while blocking", async () => {
   resetFirewallStub();
   globalThis.__silmarilFirewallClassify = async () => ({
     prediction: "MALICIOUS",
