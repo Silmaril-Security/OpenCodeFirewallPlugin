@@ -1,7 +1,7 @@
 {
   "name": "@silmaril/opencode-firewall-plugin",
   "version": "0.1.0",
-  "description": "Classify opencode lifecycle events with Silmaril Firewall, add compact context, and optionally block malicious content at supported boundaries.",
+  "description": "Classify opencode parent and child lifecycle events with Silmaril Firewall and render readable native block decisions.",
   "type": "module",
   "private": true,
   "license": "UNLICENSED",
@@ -11,6 +11,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./tui": {
+      "types": "./dist/tui.d.ts",
+      "import": "./dist/tui.js"
     }
   },
   "files": [
