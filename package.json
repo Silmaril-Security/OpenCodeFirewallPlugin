@@ -1,6 +1,6 @@
 {
   "name": "@silmaril/opencode-firewall-plugin",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Classify opencode parent and child lifecycle events with Silmaril Firewall and render readable native block decisions.",
   "type": "module",
   "private": true,
@@ -38,13 +38,13 @@
     "prepublishOnly": "node scripts/block-publish.mjs"
   },
   "dependencies": {
-    "@silmaril-security/sdk": "0.4.2"
+    "@silmaril-security/sdk": "0.5.0"
   },
   "peerDependencies": {
     "@opencode-ai/plugin": ">=1.0.0"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "^1.17.8",
+    "@opencode-ai/plugin": "1.18.4",
     "@types/node": "^24.0.0",
     "esbuild": "^0.28.1",
     "typescript": "^5.9.3"

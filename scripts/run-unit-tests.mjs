@@ -277,6 +277,9 @@ test("chat.message: benign prompt classifies and stays silent", async () => {
   assert.equal(globalThis.__silmarilFirewallCalls[0].text, "hello");
   assert.equal(globalThis.__silmarilFirewallCalls[0].options.hook, "user_input");
   assert.equal(globalThis.__silmarilFirewallCalls[0].options.metadata.opencodeHookEvent, "chat.message");
+  assert.equal(globalThis.__silmarilFirewallCalls[0].options.metadata.conversationId, "ses_1");
+  assert.equal(globalThis.__silmarilFirewallCalls[0].options.metadata.sessionId, "ses_1");
+  assert.match(globalThis.__silmarilFirewallCalls[0].options.requestId, /^opencode-firewall-plugin-[a-f0-9]{64}$/);
   assert.equal(output.parts.length, 1);
   assert.equal(logs.some((entry) => entry.body.message === "classification_result"), true);
 });
@@ -344,7 +347,7 @@ test("chat.message and tool.execute.before: optional blocking throws before exec
   assert.equal(output.output.includes("bad tool response"), false);
 });
 
-test("blocking decision respects benign predictions and thresholds", () => {
+test("blocking decision uses only exact MALICIOUS prediction", () => {
   assert.equal(t.shouldBlockClassification({
     prediction: "BENIGN",
     score: 0.99,
@@ -374,13 +377,17 @@ test("blocking decision respects benign predictions and thresholds", () => {
     score: 0.49,
     threshold: 0.5,
     primaryOutcome: "control_abuse",
-  }), false);
+  }), true);
   assert.equal(t.shouldBlockClassification({
     prediction: "MALICIOUS",
     score: 0.5,
     threshold: 0.5,
     primaryOutcome: "control_abuse",
   }), true);
+  assert.equal(t.shouldBlockClassification({ prediction: "UNKNOWN", score: 1 }), false);
+  assert.equal(t.shouldBlockClassification({ prediction: "malicious", blocked: true }), false);
+  assert.equal(t.shouldBlockClassification({ blocked: true, score: 1 }), false);
+  assert.equal(t.shouldBlockClassification({}), false);
 });
 
 test("tool hooks: benign before and after classify without appending context", async () => {
@@ -422,7 +429,21 @@ test("tool hooks preserve child session metadata while blocking", async () => {
     /Unsafe agent control attempt/,
   );
   assert.equal(globalThis.__silmarilFirewallCalls[0].options.metadata.sessionId, "child_session");
+  assert.equal(globalThis.__silmarilFirewallCalls[0].options.metadata.conversationId, "child_session");
   assert.equal(globalThis.__silmarilFirewallCalls[0].options.metadata.callId, "child_call_1");
+});
+
+test("stable request identity is retry-stable and content-sensitive", () => {
+  const target = {
+    hookEventName: "tool.execute.before",
+    hook: "tool_call",
+    text: "one",
+    metadata: { callId: "call_1", conversationId: "ses_1" },
+  };
+  const first = t.buildLogicalRequestId(target);
+  assert.equal(first, t.buildLogicalRequestId(target));
+  assert.notEqual(first, t.buildLogicalRequestId({ ...target, text: "two" }));
+  assert.equal(t.buildLogicalRequestId({ ...target, metadata: {} }), undefined);
 });
 
 test("experimental.text.complete: classifies assistant output without mutating text by default", async () => {
@@ -513,9 +534,11 @@ test("demo launcher, tool, and OpenCode assets build public URLs without credent
   assert.equal(command.includes("secret-key"), false);
 });
 
-test("source and dependency invariants: SDK 0.4.2 and package is unpublished until licensed", async () => {
+test("source and dependency invariants: SDK 0.5.0 and package is unpublished until licensed", async () => {
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
-  assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.4.2");
+  assert.equal(packageJson.version, "0.2.0");
+  assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.5.0");
+  assert.equal(packageJson.devDependencies["@opencode-ai/plugin"], "1.18.4");
   assert.equal(packageJson.private, true);
   assert.equal(packageJson.license, "UNLICENSED");
   assert.ok(packageJson.files.includes("opencode"));

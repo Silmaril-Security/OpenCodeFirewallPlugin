@@ -109,6 +109,13 @@ SILMARIL_DEMO_BASE_URL="http://localhost:3001" node scripts/open-playground.mjs
 
 opencode does not expose direct `Stop` or `SubagentStop` parity hooks. Assistant output classification is implemented through `experimental.text.complete`. opencode dispatches child sessions created by the `task` tool through the same server hook surface under their own `sessionID`; the plugin treats those events the same as parent events, and its regression tests assert that received child `sessionID`/`callID` values are preserved through classification and blocking.
 
+Only `prediction === "MALICIOUS"` is enforceable. Scores, thresholds, outcomes,
+missing predictions, and unknown predictions remain diagnostic. Each OpenCode
+`sessionID` is sent as the exact conversation identity, so child sessions retain
+independent sequences. Stable message, part, and call identifiers produce
+content-sensitive request IDs for retry idempotency; events without one use the
+SDK-generated ID.
+
 ## Context Output
 
 Model-visible context uses readable prose and never includes raw classified text:
@@ -134,7 +141,11 @@ npm run build
 npm pack --dry-run
 ```
 
-The package pins `@silmaril-security/sdk` to `0.4.2`. Unit tests stub the SDK and cover config loading, opencode event mapping, shadow behavior, optional enforcement across supported boundaries, fail-open behavior, no raw payload leakage, demo launcher behavior, and the SDK version invariant.
+The package pins `@silmaril-security/sdk` to `0.5.0` and develops against
+`@opencode-ai/plugin@1.18.4`. Unit tests stub the SDK and cover config loading,
+opencode event mapping, shadow behavior, optional enforcement across supported
+boundaries, fail-open behavior, no raw payload leakage, demo launcher behavior,
+and dependency invariants.
 
 ## References
 
