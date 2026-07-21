@@ -443,6 +443,13 @@ test("stable request identity is retry-stable and content-sensitive", () => {
   const first = t.buildLogicalRequestId(target);
   assert.equal(first, t.buildLogicalRequestId(target));
   assert.notEqual(first, t.buildLogicalRequestId({ ...target, text: "two" }));
+  assert.notEqual(
+    first,
+    t.buildLogicalRequestId({
+      ...target,
+      metadata: { ...target.metadata, conversationId: "ses_2" },
+    }),
+  );
   assert.equal(t.buildLogicalRequestId({ ...target, metadata: {} }), undefined);
 });
 

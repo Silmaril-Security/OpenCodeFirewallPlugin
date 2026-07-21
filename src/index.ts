@@ -792,6 +792,7 @@ export function buildLogicalRequestId(target: HookTarget): string | undefined {
     .update(stableStringify({
       integration: PLUGIN_ID,
       hookEventName: target.hookEventName,
+      conversationId: readString(target.metadata.conversationId),
       stableEventId,
       contentHash: createHash("sha256").update(target.text).digest("hex"),
     }))
