@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { platform } from "node:os";
 import type {
@@ -10,7 +10,7 @@ import type {
 import { tool } from "@opencode-ai/plugin";
 
 const PLUGIN_ID = "opencode-firewall-plugin";
-const PLUGIN_VERSION = "0.1.0";
+const PLUGIN_VERSION = "0.2.0";
 const DEFAULT_CLASSIFY_TIMEOUT_MS = 2500;
 const MIN_CLASSIFY_TIMEOUT_MS = 250;
 const MAX_CLASSIFY_TIMEOUT_MS = 10000;
@@ -45,6 +45,7 @@ type ClassifyOptions = {
   hook?: string;
   toolName?: string;
   metadata?: Record<string, unknown>;
+  requestId?: string;
 };
 type FirewallSdk = {
   Firewall: FirewallConstructor;
@@ -266,6 +267,7 @@ export function buildMetadata(
       version: PLUGIN_VERSION,
     },
     opencodeHookEvent: hookEventName,
+    conversationId: readString(fields.sessionID),
     sessionId: readString(fields.sessionID),
     messageId: readString(fields.messageID),
     partId: readString(fields.partID),
@@ -425,19 +427,7 @@ export function buildLogSummary(target: HookTarget, result: ClassificationResult
 }
 
 export function shouldBlockClassification(result: ClassificationResult): boolean {
-  const prediction = readString(result.prediction)?.toLowerCase();
-  if (prediction === "benign") {
-    return false;
-  }
-  const score = readFiniteNumber(result.score);
-  const threshold = readFiniteNumber(result.threshold);
-  if (score !== undefined && threshold !== undefined) {
-    return score >= threshold;
-  }
-  if (prediction === "malicious") {
-    return true;
-  }
-  return typeof result.blocked === "boolean" ? result.blocked : false;
+  return result.prediction === "MALICIOUS";
 }
 
 /** @deprecated Use shouldBlockClassification. */
@@ -589,6 +579,7 @@ async function classifyTarget(
       hook: target.hook,
       toolName: target.toolName,
       metadata: target.metadata,
+      requestId: buildLogicalRequestId(target),
     });
     if (debugEnabled) {
       await logger("classification_result", buildLogSummary(target, result));
@@ -792,6 +783,23 @@ function cacheKey(sessionID: string, callID: string): string {
   return `${sessionID}:${callID}`;
 }
 
+export function buildLogicalRequestId(target: HookTarget): string | undefined {
+  const stableEventId = readString(target.metadata.callId)
+    ?? readString(target.metadata.partId)
+    ?? readString(target.metadata.messageId);
+  if (!stableEventId) return undefined;
+  const digest = createHash("sha256")
+    .update(stableStringify({
+      integration: PLUGIN_ID,
+      hookEventName: target.hookEventName,
+      conversationId: readString(target.metadata.conversationId),
+      stableEventId,
+      contentHash: createHash("sha256").update(target.text).digest("hex"),
+    }))
+    .digest("hex");
+  return `${PLUGIN_ID}-${digest}`;
+}
+
 export const __testInternals = {
   resolveRuntimeConfig,
   buildMetadata,
@@ -810,5 +818,6 @@ export const __testInternals = {
   isMaliciousClassification,
   formatBlockReason,
   stableStringify,
+  buildLogicalRequestId,
   buildDemoUrl,
 };
