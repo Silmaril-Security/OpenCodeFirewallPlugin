@@ -184,12 +184,17 @@ export async function emitLocalProtectionEvent(
       options.environment ?? process.env,
       options.homeDirectory ?? homedir(),
     );
-  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const createdDirectory = await mkdir(directory, {
+    recursive: true,
+    mode: 0o700,
+  });
   const directoryStat = await lstat(directory);
   if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
     throw new Error("Local evidence directory must be a real directory.");
   }
-  await chmod(directory, 0o700);
+  if (createdDirectory !== undefined) {
+    await chmod(directory, 0o700);
+  }
 
   const eventDigest = sha256(event.id);
   const destination = path.join(directory, `event-${eventDigest}.json`);

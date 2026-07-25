@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -590,6 +591,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
 
   const root = await mkdtemp(path.join(tmpdir(), "silmaril-opencode-evidence-"));
   try {
+    await chmod(root, 0o750);
     const destination = await t.emitLocalProtectionEvent({
       hook: "user_input",
       mode: "shadow",
@@ -600,7 +602,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
       pluginVersion: "0.2.1",
     }, { directory: root });
     assert.deepEqual(await readdir(root), [path.basename(destination)]);
-    assert.equal((await stat(root)).mode & 0o777, 0o700);
+    assert.equal((await stat(root)).mode & 0o777, 0o750);
     assert.equal((await stat(destination)).mode & 0o777, 0o600);
     assert.equal((await readFile(destination, "utf8")).includes("private prompt"), false);
   } finally {
