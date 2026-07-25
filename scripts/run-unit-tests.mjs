@@ -1,5 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -11,6 +22,7 @@ const outFile = path.join(outDir, "index-under-test.mjs");
 
 await rm(outDir, { recursive: true, force: true });
 await mkdir(outDir, { recursive: true });
+process.env.SILMARIL_LOCAL_EVENT_DIR = path.join(outDir, "evidence");
 
 await build({
   entryPoints: [path.join(repoRoot, "src", "index.ts")],
@@ -225,7 +237,7 @@ test("stableStringify sorts objects and handles circular values", () => {
   assert.equal(t.stableStringify(undefined), "");
 });
 
-test("context output and structured log omit raw classified text", () => {
+test("native block copy and structured log omit raw classified text", () => {
   const target = {
     hook: "tool_call",
     hookEventName: "tool.execute.before",
@@ -240,14 +252,14 @@ test("context output and structured log omit raw classified text", () => {
     threshold: 0.5,
     primaryOutcome: "prompt_injection",
   };
-  const context = t.formatContextObject(t.buildCompactContext(target, result));
-  assert.ok(context.includes("Silmaril Firewall flagged unsafe content"));
-  assert.ok(context.includes("Unsafe agent control attempt"));
-  assert.ok(context.includes("Surface: tool call (bash) [call_1]"));
-  assert.equal(context.includes("```json"), false);
-  assert.equal(context.includes("score"), false);
-  assert.equal(context.includes("threshold"), false);
-  assert.equal(context.includes("ignore previous instructions"), false);
+  const replacement = t.buildBlockedReplacement(target, result);
+  assert.ok(replacement.includes("Silmaril Firewall blocked unsafe content"));
+  assert.ok(replacement.includes("Unsafe agent control attempt"));
+  assert.ok(replacement.includes("Surface: tool call (bash) [call_1]"));
+  assert.equal(replacement.includes("```json"), false);
+  assert.equal(replacement.includes("score"), false);
+  assert.equal(replacement.includes("threshold"), false);
+  assert.equal(replacement.includes("ignore previous instructions"), false);
   const logSummary = t.buildLogSummary(target, result);
   assert.equal(logSummary.score, 0.92);
   assert.equal(logSummary.threshold, 0.5);
@@ -284,7 +296,7 @@ test("chat.message: benign prompt classifies and stays silent", async () => {
   assert.equal(logs.some((entry) => entry.body.message === "classification_result"), true);
 });
 
-test("chat.message: malicious result is context-only by default", async () => {
+test("chat.message: malicious result is silent in Shadow", async () => {
   resetFirewallStub();
   globalThis.__silmarilFirewallClassify = async () => ({
     prediction: "MALICIOUS",
@@ -293,11 +305,9 @@ test("chat.message: malicious result is context-only by default", async () => {
   });
   const hooks = await mod.SilmarilFirewallPlugin(mockInput(), pluginOptions());
   const output = userMessageOutput("bad prompt");
+  const original = structuredClone(output);
   await hooks["chat.message"]({ sessionID: "ses_1", messageID: "msg_1" }, output);
-  assert.equal(output.parts.length, 2);
-  assert.ok(output.parts[1].text.includes("Silmaril Firewall flagged unsafe content"));
-  assert.equal(output.parts[1].text.includes("```json"), false);
-  assert.equal(output.parts[1].text.includes("score"), false);
+  assert.deepEqual(output, original);
 });
 
 test("chat.message and tool.execute.before: optional blocking throws before execution", async () => {
@@ -334,7 +344,6 @@ test("chat.message and tool.execute.before: optional blocking throws before exec
   assert.equal(blockedCallOutput.output.includes("score"), false);
   assert.equal(blockedCallOutput.output.includes("blocked tool response"), false);
   assert.equal(blockedCallOutput.metadata.silmarilFirewall.blocked, true);
-  assert.ok(blockedCallOutput.metadata.silmarilFirewall.toolCall);
   assert.ok(blockedCallOutput.metadata.silmarilFirewall.toolResponse);
 
   const output = { title: "done", output: "bad tool response", metadata: {} };
@@ -409,6 +418,53 @@ test("tool hooks: benign before and after classify without appending context", a
   assert.equal(output.metadata.existing, true);
   assert.equal(output.metadata.silmarilFirewall, undefined);
   assert.equal(globalThis.__silmarilFirewallInstances.length, 1);
+});
+
+test("Shadow preserves every OpenCode hook boundary", async () => {
+  resetFirewallStub();
+  globalThis.__silmarilFirewallClassify = async () => ({
+    prediction: "MALICIOUS",
+    score: 0.99,
+    threshold: 0.5,
+    primaryOutcome: "control_abuse",
+  });
+  const hooks = await mod.SilmarilFirewallPlugin(mockInput(), pluginOptions());
+
+  const message = userMessageOutput("unsafe prompt");
+  const originalMessage = structuredClone(message);
+  await hooks["chat.message"](
+    { sessionID: "ses_1", messageID: "msg_1" },
+    message,
+  );
+  assert.deepEqual(message, originalMessage);
+
+  const before = { args: { command: "unsafe" } };
+  const originalBefore = structuredClone(before);
+  await hooks["tool.execute.before"](
+    { tool: "bash", sessionID: "ses_1", callID: "call_1" },
+    before,
+  );
+  assert.deepEqual(before, originalBefore);
+
+  const after = {
+    title: "done",
+    output: "unsafe result",
+    metadata: { existing: true },
+  };
+  const originalAfter = structuredClone(after);
+  await hooks["tool.execute.after"](
+    { tool: "bash", sessionID: "ses_1", callID: "call_1", args: {} },
+    after,
+  );
+  assert.deepEqual(after, originalAfter);
+
+  const completed = { text: "unsafe response" };
+  const originalCompleted = structuredClone(completed);
+  await hooks["experimental.text.complete"](
+    { sessionID: "ses_1", messageID: "msg_2", partID: "part_2" },
+    completed,
+  );
+  assert.deepEqual(completed, originalCompleted);
 });
 
 test("tool hooks preserve child session metadata while blocking", async () => {
@@ -490,6 +546,104 @@ test("experimental.text.complete: optional blocking replaces malicious assistant
   assert.equal(output.text.includes("assistant secret text"), false);
 });
 
+test("local evidence is redacted, correlated, and native-action honest", async () => {
+  const marker = "silmaril-runtime-check:a31c0325-90d2-42c9-9886-fd4ba2a5a213";
+  const event = t.buildLocalProtectionEvent({
+    hook: "user_input",
+    mode: "shadow",
+    rawText: `Reply with OK only. ${marker}`,
+    sessionIdentity: "secret-session",
+    classification: {
+      prediction: "BENIGN",
+      score: 0.01,
+      threshold: 0.5,
+      primaryOutcome: "benign",
+    },
+    policyDecision: "allow",
+    nativeAction: "allowed",
+    pluginVersion: "0.2.1",
+  });
+  const serialized = JSON.stringify(event);
+  assert.equal(event.schemaVersion, 1);
+  assert.equal(event.host, "openCode");
+  assert.equal(
+    event.requestFingerprint,
+    createHash("sha256").update(marker).digest("hex"),
+  );
+  assert.equal(event.evidenceTruth, "plugin_reported");
+  assert.equal(serialized.includes(marker), false);
+  assert.equal(serialized.includes("secret-session"), false);
+
+  const blocked = t.buildLocalProtectionEvent({
+    hook: "pre_tool",
+    mode: "block",
+    rawText: "RAW_OPEN_CODE_SECRET",
+    classification: {
+      prediction: "MALICIOUS",
+      primaryOutcome: "secret_exposure",
+    },
+    policyDecision: "block",
+    nativeAction: "block_returned",
+    pluginVersion: "0.2.1",
+  });
+  assert.equal(blocked.evidenceTruth, "native_response_returned");
+  assert.equal(JSON.stringify(blocked).includes("RAW_OPEN_CODE_SECRET"), false);
+
+  const root = await mkdtemp(path.join(tmpdir(), "silmaril-opencode-evidence-"));
+  try {
+    await chmod(root, 0o750);
+    const destination = await t.emitLocalProtectionEvent({
+      hook: "user_input",
+      mode: "shadow",
+      rawText: "private prompt",
+      classification: { prediction: "BENIGN" },
+      policyDecision: "allow",
+      nativeAction: "allowed",
+      pluginVersion: "0.2.1",
+    }, { directory: root });
+    assert.deepEqual(await readdir(root), [path.basename(destination)]);
+    assert.equal((await stat(root)).mode & 0o777, 0o750);
+    assert.equal((await stat(destination)).mode & 0o777, 0o600);
+    assert.equal((await readFile(destination, "utf8")).includes("private prompt"), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("local evidence failure cannot weaken native blocking", async () => {
+  resetFirewallStub();
+  globalThis.__silmarilFirewallClassify = async () => ({
+    prediction: "MALICIOUS",
+    primaryOutcome: "control_abuse",
+  });
+  const root = await mkdtemp(path.join(tmpdir(), "silmaril-opencode-failure-"));
+  const invalidDirectory = path.join(root, "occupied");
+  await writeFile(invalidDirectory, "not a directory");
+  const savedDirectory = process.env.SILMARIL_LOCAL_EVENT_DIR;
+  process.env.SILMARIL_LOCAL_EVENT_DIR = invalidDirectory;
+  try {
+    const hooks = await mod.SilmarilFirewallPlugin(
+      mockInput(),
+      pluginOptions({ block_malicious: true }),
+    );
+    await assert.rejects(
+      hooks["tool.execute.before"](
+        { tool: "bash", sessionID: "ses_1", callID: "call_1" },
+        { args: { command: "unsafe" } },
+      ),
+      /Silmaril Firewall blocked/,
+    );
+    await t.flushLocalEvidenceWritesForTests();
+  } finally {
+    if (savedDirectory === undefined) {
+      delete process.env.SILMARIL_LOCAL_EVENT_DIR;
+    } else {
+      process.env.SILMARIL_LOCAL_EVENT_DIR = savedDirectory;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("run hooks: missing config, empty payloads, and classifier errors fail open", async () => {
   resetFirewallStub();
   await withoutSilmarilEnv(async () => {
@@ -543,7 +697,7 @@ test("demo launcher, tool, and OpenCode assets build public URLs without credent
 
 test("source and dependency invariants: SDK 0.5.0 and package is unpublished until licensed", async () => {
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.2.0");
+  assert.equal(packageJson.version, "0.2.1");
   assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.5.0");
   assert.equal(packageJson.devDependencies["@opencode-ai/plugin"], "1.18.4");
   assert.equal(packageJson.private, true);
@@ -554,6 +708,8 @@ test("source and dependency invariants: SDK 0.5.0 and package is unpublished unt
   const source = await readFile(path.join(repoRoot, "src", "index.ts"), "utf8");
   assert.equal(source.includes("rawPrompt"), false);
   assert.equal(source.includes("rawToolInput"), false);
+  assert.equal(source.includes("buildSyntheticContextPart"), false);
+  assert.equal(source.includes("appendFirewallContext"), false);
 });
 
 let failed = 0;
@@ -569,6 +725,7 @@ for (const { name, fn } of tests) {
   }
 }
 
+await t.flushLocalEvidenceWritesForTests();
 await rm(outDir, { recursive: true, force: true });
 
 const elapsed = (performance.now() - started).toFixed(1);
