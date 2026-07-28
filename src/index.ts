@@ -157,11 +157,12 @@ export const SilmarilFirewallPlugin: Plugin = async (input, options = {}) => {
       const traceSegments = await readOpenCodeTraceSegments(input, sessionID);
       const observedForSession = observedTraceSegments.get(sessionID) ?? new Set<string>();
       observedTraceSegments.set(sessionID, observedForSession);
-      for (const segment of traceSegments) {
+      for (const [traceIndex, segment] of traceSegments.entries()) {
         const identity = sha256(stableStringify({
           sessionID,
           messageID: segment.messageID,
           partID: segment.partID,
+          traceIndex,
           source: segment.source,
           hook: segment.hook,
           contentHash: sha256(segment.text),
@@ -181,6 +182,7 @@ export const SilmarilFirewallPlugin: Plugin = async (input, options = {}) => {
             parentSessionID: parentID,
             messageID: segment.messageID,
             partID: segment.partID,
+            traceIndex,
             traceSource: segment.source,
             traceRole: segment.role,
             toolName: segment.toolName,
@@ -431,6 +433,7 @@ export function buildMetadata(
     modelId: readString(fields.modelID),
     variant: readString(fields.variant),
     toolName: readString(fields.toolName),
+    traceIndex: readFiniteNumber(fields.traceIndex),
     traceSource: readString(fields.traceSource),
     traceRole: readString(fields.traceRole),
     projectId: readString((input.project as Record<string, unknown> | undefined)?.id),

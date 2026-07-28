@@ -625,11 +625,19 @@ test("child trace dedup keeps identical parts from distinct messages", async () 
       },
       messages: [
         {
-          info: { id: "message-one", role: "assistant" },
+          info: { role: "assistant" },
           parts: [{ type: "text", text: "same visible content" }],
         },
         {
-          info: { id: "message-two", role: "assistant" },
+          info: { role: "assistant" },
+          parts: [{ type: "text", text: "same visible content" }],
+        },
+        {
+          info: { id: "reused-message", role: "assistant" },
+          parts: [{ type: "text", text: "same visible content" }],
+        },
+        {
+          info: { id: "reused-message", role: "assistant" },
           parts: [{ type: "text", text: "same visible content" }],
         },
       ],
@@ -653,12 +661,18 @@ test("child trace dedup keeps identical parts from distinct messages", async () 
     },
   });
 
-  assert.equal(globalThis.__silmarilFirewallCalls.length, 2);
+  assert.equal(globalThis.__silmarilFirewallCalls.length, 4);
   assert.deepEqual(
     globalThis.__silmarilFirewallCalls.map(
       (call) => call.options.metadata.messageId,
     ),
-    ["message-one", "message-two"],
+    [undefined, undefined, "reused-message", "reused-message"],
+  );
+  assert.deepEqual(
+    globalThis.__silmarilFirewallCalls.map(
+      (call) => call.options.metadata.traceIndex,
+    ),
+    [0, 1, 2, 3],
   );
 
   await hooks.event({
@@ -667,7 +681,7 @@ test("child trace dedup keeps identical parts from distinct messages", async () 
       properties: { sessionID: "child_session" },
     },
   });
-  assert.equal(globalThis.__silmarilFirewallCalls.length, 2);
+  assert.equal(globalThis.__silmarilFirewallCalls.length, 4);
 });
 
 test("stable request identity is retry-stable and content-sensitive", () => {
