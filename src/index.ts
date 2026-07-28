@@ -160,6 +160,7 @@ export const SilmarilFirewallPlugin: Plugin = async (input, options = {}) => {
       for (const segment of traceSegments) {
         const identity = sha256(stableStringify({
           sessionID,
+          messageID: segment.messageID,
           partID: segment.partID,
           source: segment.source,
           hook: segment.hook,

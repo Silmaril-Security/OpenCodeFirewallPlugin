@@ -615,6 +615,61 @@ test("child session events observe lifecycle and the complete trace including re
   assert.equal(globalThis.__silmarilFirewallCalls.length, 12);
 });
 
+test("child trace dedup keeps identical parts from distinct messages", async () => {
+  resetFirewallStub();
+  const sessions = {
+    child_session: {
+      info: {
+        id: "child_session",
+        parentID: "parent_session",
+      },
+      messages: [
+        {
+          info: { id: "message-one", role: "assistant" },
+          parts: [{ type: "text", text: "same visible content" }],
+        },
+        {
+          info: { id: "message-two", role: "assistant" },
+          parts: [{ type: "text", text: "same visible content" }],
+        },
+      ],
+    },
+  };
+  const hooks = await mod.SilmarilFirewallPlugin(
+    mockInput([], sessions),
+    pluginOptions(),
+  );
+
+  await hooks.event({
+    event: {
+      type: "session.created",
+      properties: { info: sessions.child_session.info },
+    },
+  });
+  await hooks.event({
+    event: {
+      type: "session.idle",
+      properties: { sessionID: "child_session" },
+    },
+  });
+
+  assert.equal(globalThis.__silmarilFirewallCalls.length, 2);
+  assert.deepEqual(
+    globalThis.__silmarilFirewallCalls.map(
+      (call) => call.options.metadata.messageId,
+    ),
+    ["message-one", "message-two"],
+  );
+
+  await hooks.event({
+    event: {
+      type: "session.idle",
+      properties: { sessionID: "child_session" },
+    },
+  });
+  assert.equal(globalThis.__silmarilFirewallCalls.length, 2);
+});
+
 test("stable request identity is retry-stable and content-sensitive", () => {
   const target = {
     hookEventName: "tool.execute.before",
