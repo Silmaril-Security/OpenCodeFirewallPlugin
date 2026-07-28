@@ -106,8 +106,19 @@ SILMARIL_DEMO_BASE_URL="http://localhost:3001" node scripts/open-playground.mjs
 | `tool.execute.before` | stable-serialized tool args | `tool_call` | silent | block malicious tool call |
 | `tool.execute.after` | tool output string | `tool_response` | exact pass-through | replace malicious tool output |
 | `experimental.text.complete` | assistant text | `llm_output` | exact pass-through | replace malicious final assistant output |
+| `session.created` for a child | child-session title | `user_input` | observe-only | none |
+| `session.idle` for a child | every visible child-session text, reasoning, subtask, and tool segment | segment-native hook | observe-only | none |
 
-opencode does not expose direct `Stop` or `SubagentStop` parity hooks. Assistant output classification is implemented through `experimental.text.complete`. opencode dispatches child sessions created by the `task` tool through the same server hook surface under their own `sessionID`; the plugin treats those events the same as parent events, and its regression tests assert that received child `sessionID`/`callID` values are preserved through classification and blocking.
+opencode does not expose direct `Stop` or `SubagentStop` parity hooks. Assistant
+output classification is implemented through `experimental.text.complete`.
+Child sessions created by the `task` tool use the same normal hook surface under
+their own `sessionID`. The plugin also observes `session.created` and
+`session.idle`: when a child becomes idle, it fetches that child session's full
+host-visible message list and classifies every text, explicit reasoning part,
+subtask, tool input, and tool output once per content-sensitive part identity.
+These event callbacks are observe-only even when blocking is enabled because
+opencode provides no enforcement return channel there. Reasoning absent from
+the OpenCode session API remains unavailable to plugins.
 
 Only `prediction === "MALICIOUS"` is enforceable. Scores, thresholds, outcomes,
 missing predictions, and unknown predictions remain diagnostic. Each OpenCode

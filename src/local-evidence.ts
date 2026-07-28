@@ -18,7 +18,7 @@ const pendingWrites = new Set<Promise<void>>();
 type ClassificationLike = Record<string, unknown>;
 
 export type LocalProtectionEventInput = {
-  hook: "user_input" | "pre_tool" | "post_tool" | "llm_output";
+  hook: "user_input" | "pre_tool" | "post_tool" | "llm_output" | "subagent";
   mode: "block" | "shadow";
   rawText: string;
   requestIdentity?: string;

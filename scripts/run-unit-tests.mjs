@@ -140,13 +140,21 @@ function pluginOptions(overrides = {}) {
   };
 }
 
-function mockInput(logs = []) {
+function mockInput(logs = [], sessions = {}) {
   return {
     client: {
       app: {
         async log(entry) {
           logs.push(entry);
           return { data: true };
+        },
+      },
+      session: {
+        async get({ path: { id } }) {
+          return { data: sessions[id]?.info };
+        },
+        async messages({ path: { id } }) {
+          return { data: sessions[id]?.messages ?? [] };
         },
       },
     },
@@ -489,6 +497,124 @@ test("tool hooks preserve child session metadata while blocking", async () => {
   assert.equal(globalThis.__silmarilFirewallCalls[0].options.metadata.callId, "child_call_1");
 });
 
+test("child session events observe lifecycle and the complete trace including reasoning", async () => {
+  resetFirewallStub();
+  globalThis.__silmarilFirewallClassify = async () => ({
+    prediction: "MALICIOUS",
+    score: 0.99,
+    threshold: 0.5,
+    primaryOutcome: "control_abuse",
+  });
+  const sessions = {
+    child_session: {
+      info: {
+        id: "child_session",
+        parentID: "parent_session",
+        title: "delegated security review",
+      },
+      messages: [
+        {
+          info: { id: "message-user", role: "user" },
+          parts: [{
+            id: "part-user",
+            type: "text",
+            text: "delegated prompt",
+          }],
+        },
+        {
+          info: { id: "message-assistant", role: "assistant" },
+          parts: [
+            {
+              id: "part-reasoning",
+              type: "reasoning",
+              text: "provider-exposed reasoning",
+            },
+            {
+              id: "part-tool",
+              type: "tool",
+              tool: "bash",
+              callID: "call-1",
+              state: {
+                status: "completed",
+                input: { command: "pwd" },
+                output: "workspace",
+              },
+            },
+            {
+              id: "part-final",
+              type: "text",
+              text: "final answer",
+            },
+          ],
+        },
+      ],
+    },
+  };
+  const hooks = await mod.SilmarilFirewallPlugin(
+    mockInput([], sessions),
+    pluginOptions({ block_malicious: true }),
+  );
+
+  await hooks.event({
+    event: {
+      type: "session.created",
+      properties: { info: sessions.child_session.info },
+    },
+  });
+  await hooks.event({
+    event: {
+      type: "session.idle",
+      properties: { sessionID: "child_session" },
+    },
+  });
+
+  assert.equal(globalThis.__silmarilFirewallCalls.length, 6);
+  assert.deepEqual(
+    globalThis.__silmarilFirewallCalls.map((call) => call.options.hook),
+    ["user_input", "user_input", "llm_output", "tool_call", "tool_response", "llm_output"],
+  );
+  assert.deepEqual(
+    globalThis.__silmarilFirewallCalls.slice(1).map((call) => call.options.metadata.traceSource),
+    ["text", "reasoning", "tool_input", "tool_output", "text"],
+  );
+  assert.equal(
+    globalThis.__silmarilFirewallCalls[2].text,
+    "provider-exposed reasoning",
+  );
+  assert.equal(
+    globalThis.__silmarilFirewallCalls[2].options.metadata.parentSessionId,
+    "parent_session",
+  );
+
+  await hooks.event({
+    event: {
+      type: "session.idle",
+      properties: { sessionID: "child_session" },
+    },
+  });
+  assert.equal(globalThis.__silmarilFirewallCalls.length, 6);
+
+  await hooks.event({
+    event: {
+      type: "session.deleted",
+      properties: { info: sessions.child_session.info },
+    },
+  });
+  await hooks.event({
+    event: {
+      type: "session.created",
+      properties: { info: sessions.child_session.info },
+    },
+  });
+  await hooks.event({
+    event: {
+      type: "session.idle",
+      properties: { sessionID: "child_session" },
+    },
+  });
+  assert.equal(globalThis.__silmarilFirewallCalls.length, 12);
+});
+
 test("stable request identity is retry-stable and content-sensitive", () => {
   const target = {
     hookEventName: "tool.execute.before",
@@ -561,7 +687,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
     },
     policyDecision: "allow",
     nativeAction: "allowed",
-    pluginVersion: "0.2.1",
+    pluginVersion: "0.3.0",
   });
   const serialized = JSON.stringify(event);
   assert.equal(event.schemaVersion, 1);
@@ -584,7 +710,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
     },
     policyDecision: "block",
     nativeAction: "block_returned",
-    pluginVersion: "0.2.1",
+    pluginVersion: "0.3.0",
   });
   assert.equal(blocked.evidenceTruth, "native_response_returned");
   assert.equal(JSON.stringify(blocked).includes("RAW_OPEN_CODE_SECRET"), false);
@@ -599,7 +725,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
       classification: { prediction: "BENIGN" },
       policyDecision: "allow",
       nativeAction: "allowed",
-      pluginVersion: "0.2.1",
+      pluginVersion: "0.3.0",
     }, { directory: root });
     assert.deepEqual(await readdir(root), [path.basename(destination)]);
     assert.equal((await stat(root)).mode & 0o777, 0o750);
@@ -697,7 +823,7 @@ test("demo launcher, tool, and OpenCode assets build public URLs without credent
 
 test("source and dependency invariants: SDK 0.5.0 and package is unpublished until licensed", async () => {
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.2.1");
+  assert.equal(packageJson.version, "0.3.0");
   assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.5.0");
   assert.equal(packageJson.devDependencies["@opencode-ai/plugin"], "1.18.4");
   assert.equal(packageJson.private, true);
