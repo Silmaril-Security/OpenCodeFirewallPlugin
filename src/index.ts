@@ -18,7 +18,7 @@ import {
 } from "./local-evidence.js";
 
 const PLUGIN_ID = "opencode-firewall-plugin";
-const PLUGIN_VERSION = "0.3.0";
+const PLUGIN_VERSION = "0.3.1";
 const DEFAULT_CLASSIFY_TIMEOUT_MS = 2500;
 const MIN_CLASSIFY_TIMEOUT_MS = 250;
 const MAX_CLASSIFY_TIMEOUT_MS = 10000;
@@ -37,6 +37,7 @@ type RuntimeConfig = {
   timeoutMs: number;
   blockMalicious: boolean;
   debug: boolean;
+  endpointId?: string;
 };
 
 type RuntimeSource = Record<string, unknown>;
@@ -386,6 +387,10 @@ export function resolveRuntimeConfig(
     ?? readFirstString(env, ["SILMARIL_API_KEY"]);
   const apiUrl = readFirstString(options, ["silmaril_api_url"])
     ?? readFirstString(env, ["SILMARIL_API_URL"]);
+  const endpointId = readEndpointId(
+    readFirstString(options, ["endpoint_id"])
+      ?? readFirstString(env, ["SILMARIL_ENDPOINT_ID"]),
+  );
 
   if (!apiKey || !apiUrl) {
     return undefined;
@@ -394,6 +399,7 @@ export function resolveRuntimeConfig(
   return {
     apiKey,
     apiUrl,
+    ...(endpointId ? { endpointId } : {}),
     timeoutMs: readIntegerInRange(
       readFirstRaw(options, ["timeout_ms"])
         ?? readFirstRaw(env, ["SILMARIL_TIMEOUT_MS"]),
@@ -681,7 +687,7 @@ async function classifyTarget(
     const result = await firewall.classify(target.text, {
       hook: target.hook,
       toolName: target.toolName,
-      metadata: target.metadata,
+      metadata: withProvenance(target.metadata, config.endpointId),
       requestId: buildLogicalRequestId(target),
     });
     if (debugEnabled) {
@@ -1077,6 +1083,30 @@ function omitUndefined<T extends Record<string, unknown>>(record: T): Record<str
   );
 }
 
+export function withProvenance(
+  metadata: Record<string, unknown>,
+  endpointId?: string,
+): Record<string, unknown> {
+  const silmaril = readRecord(metadata.silmaril) ?? {};
+  return {
+    ...metadata,
+    silmaril: {
+      ...silmaril,
+      provenance: omitUndefined({
+        schema_version: 1,
+        endpoint_id: endpointId,
+        harness: "opencode",
+      }),
+    },
+  };
+}
+
+function readEndpointId(value: string | undefined): string | undefined {
+  return value && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)
+    ? value
+    : undefined;
+}
+
 export function buildLogicalRequestId(target: HookTarget): string | undefined {
   const stableEventId = readString(target.metadata.callId)
     ?? readString(target.metadata.partId)
@@ -1098,6 +1128,7 @@ export function buildLogicalRequestId(target: HookTarget): string | undefined {
 export const __testInternals = {
   resolveRuntimeConfig,
   buildMetadata,
+  withProvenance,
   extractUserText,
   buildCompactContext,
   buildCombinedToolContext,
