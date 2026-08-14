@@ -30,6 +30,7 @@ Then add the plugin to `opencode.json`:
       {
         "silmaril_api_url": "https://...",
         "silmaril_api_key": "...",
+        "endpoint_id": "2b64e603-f82a-4aec-9524-9736472dc80a",
         "timeout_ms": 2500,
         "block_malicious": false,
         "debug": false
@@ -55,6 +56,7 @@ Use environment variables instead of committed config values when possible:
 ```sh
 export SILMARIL_API_URL="https://..."
 export SILMARIL_API_KEY="..."
+export SILMARIL_ENDPOINT_ID="2b64e603-f82a-4aec-9524-9736472dc80a"
 export SILMARIL_TIMEOUT_MS="2500"
 export SILMARIL_BLOCK_MALICIOUS="false"
 export SILMARIL_DEBUG="false"
@@ -64,10 +66,12 @@ export SILMARIL_DEBUG="false"
 
 Runtime configuration is resolved in this order:
 
-1. opencode plugin tuple options: `silmaril_api_key`, `silmaril_api_url`, `timeout_ms`, `block_malicious`, and `debug`.
-2. Process environment variables: `SILMARIL_API_KEY`, `SILMARIL_API_URL`, `SILMARIL_TIMEOUT_MS`, `SILMARIL_BLOCK_MALICIOUS`, and `SILMARIL_DEBUG`.
+1. opencode plugin tuple options: `silmaril_api_key`, `silmaril_api_url`, `endpoint_id`, `timeout_ms`, `block_malicious`, and `debug`.
+2. Process environment variables: `SILMARIL_API_KEY`, `SILMARIL_API_URL`, `SILMARIL_ENDPOINT_ID`, `SILMARIL_TIMEOUT_MS`, `SILMARIL_BLOCK_MALICIOUS`, and `SILMARIL_DEBUG`.
 
 If either API key or API URL is missing, the plugin exits hooks without output. `timeout_ms` defaults to `2500` and accepts values from `250` through `10000`. `block_malicious` defaults to `false`; set it to `true` only when you want malicious user-message, tool-call, tool-output, and final assistant-output classifications to block where opencode exposes an enforcement surface. Classifier failures, SDK import failures, malformed payloads, empty extracted text, and timeouts fail open.
+
+Every classifier request carries plugin-owned `metadata.silmaril.provenance`. If the app-provided canonical UUID v4 is absent, the plugin continues with harness-only provenance.
 
 Set `debug=true` or `SILMARIL_DEBUG=true` to write compact diagnostic summaries through `client.app.log()`. Debug logs omit raw prompts, tool inputs, tool outputs, and assistant text.
 

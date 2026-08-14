@@ -238,6 +238,25 @@ test("config: timeout bounds are enforced", () => {
   assert.equal(t.resolveRuntimeConfig({}, baseEnv({ SILMARIL_TIMEOUT_MS: "10000" })).timeoutMs, 10000);
 });
 
+test("config and metadata use canonical plugin-owned endpoint provenance", () => {
+  const endpointId = "2b64e603-f82a-4aec-9524-9736472dc80a";
+  assert.equal(t.resolveRuntimeConfig({ ...pluginOptions(), endpoint_id: endpointId }, {}).endpointId, endpointId);
+  assert.equal(t.resolveRuntimeConfig({ ...pluginOptions(), endpoint_id: endpointId.toUpperCase() }, {}).endpointId, undefined);
+  assert.deepEqual(t.withProvenance({
+    silmaril: {
+      integration: "opencode-firewall-plugin",
+      provenance: { harness: "spoofed" },
+    },
+    keep: true,
+  }, endpointId), {
+    silmaril: {
+      integration: "opencode-firewall-plugin",
+      provenance: { schema_version: 1, endpoint_id: endpointId, harness: "opencode" },
+    },
+    keep: true,
+  });
+});
+
 test("stableStringify sorts objects and handles circular values", () => {
   const circular = { z: 1, a: 2n };
   circular.self = circular;
@@ -299,6 +318,10 @@ test("chat.message: benign prompt classifies and stays silent", async () => {
   assert.equal(globalThis.__silmarilFirewallCalls[0].options.metadata.opencodeHookEvent, "chat.message");
   assert.equal(globalThis.__silmarilFirewallCalls[0].options.metadata.conversationId, "ses_1");
   assert.equal(globalThis.__silmarilFirewallCalls[0].options.metadata.sessionId, "ses_1");
+  assert.deepEqual(globalThis.__silmarilFirewallCalls[0].options.metadata.silmaril.provenance, {
+    schema_version: 1,
+    harness: "opencode",
+  });
   assert.match(globalThis.__silmarilFirewallCalls[0].options.requestId, /^opencode-firewall-plugin-[a-f0-9]{64}$/);
   assert.equal(output.parts.length, 1);
   assert.equal(logs.some((entry) => entry.body.message === "classification_result"), true);
@@ -756,7 +779,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
     },
     policyDecision: "allow",
     nativeAction: "allowed",
-    pluginVersion: "0.3.0",
+    pluginVersion: "0.3.1",
   });
   const serialized = JSON.stringify(event);
   assert.equal(event.schemaVersion, 1);
@@ -779,7 +802,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
     },
     policyDecision: "block",
     nativeAction: "block_returned",
-    pluginVersion: "0.3.0",
+    pluginVersion: "0.3.1",
   });
   assert.equal(blocked.evidenceTruth, "native_response_returned");
   assert.equal(JSON.stringify(blocked).includes("RAW_OPEN_CODE_SECRET"), false);
@@ -794,7 +817,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
       classification: { prediction: "BENIGN" },
       policyDecision: "allow",
       nativeAction: "allowed",
-      pluginVersion: "0.3.0",
+      pluginVersion: "0.3.1",
     }, { directory: root });
     assert.deepEqual(await readdir(root), [path.basename(destination)]);
     assert.equal((await stat(root)).mode & 0o777, 0o750);
@@ -892,7 +915,7 @@ test("demo launcher, tool, and OpenCode assets build public URLs without credent
 
 test("source and dependency invariants: SDK 0.5.0 and package is unpublished until licensed", async () => {
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.3.0");
+  assert.equal(packageJson.version, "0.3.1");
   assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.5.0");
   assert.equal(packageJson.devDependencies["@opencode-ai/plugin"], "1.18.4");
   assert.equal(packageJson.private, true);
