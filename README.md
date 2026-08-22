@@ -155,7 +155,8 @@ npm run build
 npm pack --dry-run
 ```
 
-The package pins `@silmaril-security/sdk` to `0.5.0` and develops against
+The package pins `@silmaril-security/sdk` to `0.6.0` so backend-selected mode
+is preserved, and develops against
 `@opencode-ai/plugin@1.18.4`. Unit tests stub the SDK and cover config loading,
 opencode event mapping, shadow behavior, optional enforcement across supported
 boundaries, fail-open behavior, no raw payload leakage, demo launcher behavior,
