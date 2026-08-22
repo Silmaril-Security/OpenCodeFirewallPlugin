@@ -243,6 +243,14 @@ test("config: omitted mode is backend-controlled and legacy block_malicious stil
   assert.equal(t.resolveRuntimeConfig(pluginOptions({ mode: "warn", block_malicious: true }), {}).mode, "warn");
 });
 
+test("effective mode keeps an explicit non-blocking override authoritative", () => {
+  assert.equal(
+    t.effectiveMode({ prediction: "MALICIOUS", mode: "block" }, pluginOptions({ mode: "shadow" }), {}),
+    "shadow",
+  );
+  assert.equal(t.effectiveMode({ prediction: "MALICIOUS" }, pluginOptions(), {}), "shadow");
+});
+
 test("config: timeout bounds are enforced", () => {
   assert.equal(t.resolveRuntimeConfig({}, baseEnv({ SILMARIL_TIMEOUT_MS: "249" })).timeoutMs, 2500);
   assert.equal(t.resolveRuntimeConfig({}, baseEnv({ SILMARIL_TIMEOUT_MS: "10001" })).timeoutMs, 2500);

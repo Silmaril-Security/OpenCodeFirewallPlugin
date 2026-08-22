@@ -715,7 +715,7 @@ function effectiveMode(
   options: RuntimeSource,
   env: RuntimeSource,
 ): FirewallMode {
-  return readMode(result.mode) ?? resolveRuntimeConfig(options, env)?.mode ?? "shadow";
+  return resolveRuntimeConfig(options, env)?.mode ?? readMode(result.mode) ?? "shadow";
 }
 
 function emitOpenCodeLocalEvidence(
@@ -1162,6 +1162,7 @@ export const __testInternals = {
   buildLogSummary,
   shouldBlockClassification,
   isMaliciousClassification,
+  effectiveMode,
   formatBlockReason,
   stableStringify,
   buildLogicalRequestId,
