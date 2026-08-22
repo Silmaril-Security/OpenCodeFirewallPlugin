@@ -2,7 +2,7 @@
 
 Silmaril Firewall native visibility hooks for opencode.
 
-This plugin classifies opencode lifecycle events with Silmaril Firewall. It defaults to fail-open Shadow mode, never changes agent context or output while Shadow is active, and blocks malicious content at every supported enforcement boundary when `block_malicious=true`.
+This plugin classifies opencode lifecycle events with Silmaril Firewall. Shadow is silent, Warn preserves content and adds one bounded warning at supported same-turn context surfaces, and Block throws only at genuine pre-execution enforcement boundaries. Completed outputs are never replaced; unsupported Block boundaries remain unchanged and record `block_unavailable`.
 
 Silmaril is an AI application firewall that protects agent execution. It evaluates intent, application context, tool calls, and accumulated execution state together before harmful outcomes materialize.
 
@@ -32,7 +32,7 @@ Then add the plugin to `opencode.json`:
         "silmaril_api_key": "...",
         "endpoint_id": "2b64e603-f82a-4aec-9524-9736472dc80a",
         "timeout_ms": 2500,
-        "block_malicious": false,
+        "mode": "warn",
         "debug": false
       }
     ]
@@ -69,7 +69,7 @@ Runtime configuration is resolved in this order:
 1. opencode plugin tuple options: `silmaril_api_key`, `silmaril_api_url`, `endpoint_id`, `timeout_ms`, `block_malicious`, and `debug`.
 2. Process environment variables: `SILMARIL_API_KEY`, `SILMARIL_API_URL`, `SILMARIL_ENDPOINT_ID`, `SILMARIL_TIMEOUT_MS`, `SILMARIL_BLOCK_MALICIOUS`, and `SILMARIL_DEBUG`.
 
-If either API key or API URL is missing, the plugin exits hooks without output. `timeout_ms` defaults to `2500` and accepts values from `250` through `10000`. `block_malicious` defaults to `false`; set it to `true` only when you want malicious user-message, tool-call, tool-output, and final assistant-output classifications to block where opencode exposes an enforcement surface. Classifier failures, SDK import failures, malformed payloads, empty extracted text, and timeouts fail open.
+If either API key or API URL is missing, the plugin exits hooks without output. `timeout_ms` defaults to `2500` and accepts values from `250` through `10000`. Omit `mode` to use the backend, or set `shadow`, `warn`, or `block`; explicit mode wins over legacy `block_malicious`. Classifier failures, SDK import failures, malformed payloads, empty extracted text, and timeouts fail open without adding context.
 
 Every classifier request carries plugin-owned `metadata.silmaril.provenance`. If the app-provided canonical UUID v4 is absent, the plugin continues with harness-only provenance.
 
@@ -108,8 +108,8 @@ SILMARIL_DEMO_BASE_URL="http://localhost:3001" node scripts/open-playground.mjs
 | --- | --- | --- | --- | --- |
 | `chat.message` | concatenated user text parts | `user_input` | silent | block malicious user message |
 | `tool.execute.before` | stable-serialized tool args | `tool_call` | silent | block malicious tool call |
-| `tool.execute.after` | tool output string | `tool_response` | exact pass-through | replace malicious tool output |
-| `experimental.text.complete` | assistant text | `llm_output` | exact pass-through | replace malicious final assistant output |
+| `tool.execute.after` | tool output string | `tool_response` | exact pass-through | preserve output and record `block_unavailable` |
+| `experimental.text.complete` | assistant text | `llm_output` | exact pass-through | preserve output and record `block_unavailable` |
 | `session.created` for a child | child-session title | `user_input` | observe-only | none |
 | `session.idle` for a child | every visible child-session text, reasoning, subtask, and tool segment | segment-native hook | observe-only | none |
 
