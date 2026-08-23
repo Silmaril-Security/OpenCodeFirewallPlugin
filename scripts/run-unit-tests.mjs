@@ -15,6 +15,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
+import { Firewall as RealFirewall } from "@silmaril-security/sdk";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = path.join(repoRoot, ".unit-test-build");
@@ -249,6 +250,42 @@ test("effective mode keeps an explicit non-blocking override authoritative", () 
     "shadow",
   );
   assert.equal(t.effectiveMode({ prediction: "MALICIOUS" }, pluginOptions(), {}), "shadow");
+});
+
+test("SDK 0.6.0 preserves backend-selected Warn and Block modes when local mode is omitted", async () => {
+  const originalFetch = globalThis.fetch;
+  const requestBodies = [];
+  let backendMode = "warn";
+  globalThis.fetch = async (_input, init) => {
+    requestBodies.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify({
+      prediction: "MALICIOUS",
+      score: 0.99,
+      threshold: 0.5,
+      mode: backendMode,
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  try {
+    const firewall = new RealFirewall({
+      apiKey: "test-key",
+      apiUrl: "https://alpha.example/classify",
+      timeoutMs: 1_000,
+    });
+    for (const expectedMode of ["warn", "block"]) {
+      backendMode = expectedMode;
+      const result = await firewall.classify("unsafe input", { hook: "user_input" });
+      assert.equal(result.mode, expectedMode);
+      assert.equal(t.effectiveMode(result, pluginOptions(), {}), expectedMode);
+    }
+    assert.equal(requestBodies.length, 2);
+    assert.equal(requestBodies.every((body) => !Object.hasOwn(body, "mode")), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("config: timeout bounds are enforced", () => {
@@ -812,7 +849,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
     },
     policyDecision: "allow",
     nativeAction: "allowed",
-    pluginVersion: "0.4.0",
+    pluginVersion: "0.4.1",
   });
   const serialized = JSON.stringify(event);
   assert.equal(event.schemaVersion, 1);
@@ -835,7 +872,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
     },
     policyDecision: "block",
     nativeAction: "block_returned",
-    pluginVersion: "0.4.0",
+    pluginVersion: "0.4.1",
   });
   assert.equal(blocked.evidenceTruth, "native_response_returned");
   assert.equal(JSON.stringify(blocked).includes("RAW_OPEN_CODE_SECRET"), false);
@@ -850,7 +887,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
       classification: { prediction: "BENIGN" },
       policyDecision: "allow",
       nativeAction: "allowed",
-      pluginVersion: "0.4.0",
+      pluginVersion: "0.4.1",
     }, { directory: root });
     assert.deepEqual(await readdir(root), [path.basename(destination)]);
     assert.equal((await stat(root)).mode & 0o777, 0o750);
@@ -946,10 +983,10 @@ test("demo launcher, tool, and OpenCode assets build public URLs without credent
   assert.equal(command.includes("secret-key"), false);
 });
 
-test("source and dependency invariants: SDK 0.5.0 and package is unpublished until licensed", async () => {
+test("source and dependency invariants: SDK 0.6.0 and package is unpublished until licensed", async () => {
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.4.0");
-  assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.5.0");
+  assert.equal(packageJson.version, "0.4.1");
+  assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.6.0");
   assert.equal(packageJson.devDependencies["@opencode-ai/plugin"], "1.18.4");
   assert.equal(packageJson.private, true);
   assert.equal(packageJson.license, "UNLICENSED");
