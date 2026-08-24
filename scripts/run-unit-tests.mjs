@@ -597,7 +597,7 @@ test("tool hooks preserve child session metadata while blocking", async () => {
   assert.equal(globalThis.__silmarilFirewallCalls[0].options.metadata.callId, "child_call_1");
 });
 
-test("child session events observe lifecycle and the complete trace including reasoning", async () => {
+test("child session events classify only the current lifecycle payload and ignore stored history", async () => {
   resetFirewallStub();
   globalThis.__silmarilFirewallClassify = async () => ({
     prediction: "MALICIOUS",
@@ -668,21 +668,14 @@ test("child session events observe lifecycle and the complete trace including re
     },
   });
 
-  assert.equal(globalThis.__silmarilFirewallCalls.length, 6);
+  assert.equal(globalThis.__silmarilFirewallCalls.length, 1);
   assert.deepEqual(
     globalThis.__silmarilFirewallCalls.map((call) => call.options.hook),
-    ["user_input", "user_input", "llm_output", "tool_call", "tool_response", "llm_output"],
+    ["user_input"],
   );
-  assert.deepEqual(
-    globalThis.__silmarilFirewallCalls.slice(1).map((call) => call.options.metadata.traceSource),
-    ["text", "reasoning", "tool_input", "tool_output", "text"],
-  );
+  assert.equal(globalThis.__silmarilFirewallCalls[0].text, "delegated security review");
   assert.equal(
-    globalThis.__silmarilFirewallCalls[2].text,
-    "provider-exposed reasoning",
-  );
-  assert.equal(
-    globalThis.__silmarilFirewallCalls[2].options.metadata.parentSessionId,
+    globalThis.__silmarilFirewallCalls[0].options.metadata.parentSessionId,
     "parent_session",
   );
 
@@ -692,7 +685,7 @@ test("child session events observe lifecycle and the complete trace including re
       properties: { sessionID: "child_session" },
     },
   });
-  assert.equal(globalThis.__silmarilFirewallCalls.length, 6);
+  assert.equal(globalThis.__silmarilFirewallCalls.length, 1);
 
   await hooks.event({
     event: {
@@ -712,10 +705,10 @@ test("child session events observe lifecycle and the complete trace including re
       properties: { sessionID: "child_session" },
     },
   });
-  assert.equal(globalThis.__silmarilFirewallCalls.length, 12);
+  assert.equal(globalThis.__silmarilFirewallCalls.length, 2);
 });
 
-test("child trace dedup keeps identical parts from distinct messages", async () => {
+test("session.idle never reconstructs child history", async () => {
   resetFirewallStub();
   const sessions = {
     child_session: {
@@ -761,19 +754,7 @@ test("child trace dedup keeps identical parts from distinct messages", async () 
     },
   });
 
-  assert.equal(globalThis.__silmarilFirewallCalls.length, 4);
-  assert.deepEqual(
-    globalThis.__silmarilFirewallCalls.map(
-      (call) => call.options.metadata.messageId,
-    ),
-    [undefined, undefined, "reused-message", "reused-message"],
-  );
-  assert.deepEqual(
-    globalThis.__silmarilFirewallCalls.map(
-      (call) => call.options.metadata.traceIndex,
-    ),
-    [0, 1, 2, 3],
-  );
+  assert.equal(globalThis.__silmarilFirewallCalls.length, 0);
 
   await hooks.event({
     event: {
@@ -781,7 +762,7 @@ test("child trace dedup keeps identical parts from distinct messages", async () 
       properties: { sessionID: "child_session" },
     },
   });
-  assert.equal(globalThis.__silmarilFirewallCalls.length, 4);
+  assert.equal(globalThis.__silmarilFirewallCalls.length, 0);
 });
 
 test("stable request identity is retry-stable and content-sensitive", () => {
@@ -849,7 +830,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
     },
     policyDecision: "allow",
     nativeAction: "allowed",
-    pluginVersion: "0.4.1",
+    pluginVersion: "0.4.2",
   });
   const serialized = JSON.stringify(event);
   assert.equal(event.schemaVersion, 1);
@@ -872,7 +853,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
     },
     policyDecision: "block",
     nativeAction: "block_returned",
-    pluginVersion: "0.4.1",
+    pluginVersion: "0.4.2",
   });
   assert.equal(blocked.evidenceTruth, "native_response_returned");
   assert.equal(JSON.stringify(blocked).includes("RAW_OPEN_CODE_SECRET"), false);
@@ -887,7 +868,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
       classification: { prediction: "BENIGN" },
       policyDecision: "allow",
       nativeAction: "allowed",
-      pluginVersion: "0.4.1",
+      pluginVersion: "0.4.2",
     }, { directory: root });
     assert.deepEqual(await readdir(root), [path.basename(destination)]);
     assert.equal((await stat(root)).mode & 0o777, 0o750);
@@ -985,7 +966,7 @@ test("demo launcher, tool, and OpenCode assets build public URLs without credent
 
 test("source and dependency invariants: SDK 0.6.0 and package is unpublished until licensed", async () => {
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.4.1");
+  assert.equal(packageJson.version, "0.4.2");
   assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.6.0");
   assert.equal(packageJson.devDependencies["@opencode-ai/plugin"], "1.18.4");
   assert.equal(packageJson.private, true);

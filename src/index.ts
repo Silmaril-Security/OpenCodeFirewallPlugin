@@ -18,7 +18,7 @@ import {
 } from "./local-evidence.js";
 
 const PLUGIN_ID = "opencode-firewall-plugin";
-const PLUGIN_VERSION = "0.4.1";
+const PLUGIN_VERSION = "0.4.2";
 const DEFAULT_CLASSIFY_TIMEOUT_MS = 2500;
 const MIN_CLASSIFY_TIMEOUT_MS = 250;
 const MAX_CLASSIFY_TIMEOUT_MS = 10000;
@@ -81,8 +81,6 @@ type FirewallRuntime = {
 export const SilmarilFirewallPlugin: Plugin = async (input, options = {}) => {
   const logger = makeDebugLogger(input, options, process.env);
   const firewallRuntime = createFirewallRuntime();
-  const childSessions = new Map<string, string>();
-  const observedTraceSegments = new Map<string, Set<string>>();
 
   const observeTarget = async (target: HookTarget): Promise<void> => {
     const result = await classifyTarget(
@@ -119,7 +117,6 @@ export const SilmarilFirewallPlugin: Plugin = async (input, options = {}) => {
         if (!sessionID || !parentID) {
           return;
         }
-        childSessions.set(sessionID, parentID);
         const title = readString(session?.title);
         if (!title) {
           return;
@@ -135,83 +132,6 @@ export const SilmarilFirewallPlugin: Plugin = async (input, options = {}) => {
           }),
         });
         return;
-      }
-
-      if (eventType === "session.deleted") {
-        const session = readRecord(properties.info);
-        const sessionID = readString(session?.id);
-        if (sessionID) {
-          childSessions.delete(sessionID);
-          observedTraceSegments.delete(sessionID);
-        }
-        return;
-      }
-
-      if (eventType !== "session.idle") {
-        return;
-      }
-      const sessionID = readString(properties.sessionID);
-      if (!sessionID) {
-        return;
-      }
-      const parentID = await resolveParentSessionID(input, sessionID, childSessions);
-      if (!parentID) {
-        return;
-      }
-      const traceSegments = await readOpenCodeTraceSegments(input, sessionID);
-      const observedForSession = observedTraceSegments.get(sessionID) ?? new Set<string>();
-      observedTraceSegments.set(sessionID, observedForSession);
-      for (const [traceIndex, segment] of traceSegments.entries()) {
-        const identity = sha256(stableStringify({
-          sessionID,
-          messageID: segment.messageID,
-          partID: segment.partID,
-          traceIndex,
-          source: segment.source,
-          hook: segment.hook,
-          contentHash: sha256(segment.text),
-        }));
-        if (observedForSession.has(identity)) {
-          continue;
-        }
-        observedForSession.add(identity);
-        const target: HookTarget = {
-          hookEventName: "subagent.trace",
-          hook: segment.hook,
-          text: segment.text,
-          toolName: segment.toolName,
-          callId: segment.callId,
-          metadata: buildMetadata(input, "subagent.trace", {
-            sessionID,
-            parentSessionID: parentID,
-            messageID: segment.messageID,
-            partID: segment.partID,
-            traceIndex,
-            traceSource: segment.source,
-            traceRole: segment.role,
-            toolName: segment.toolName,
-            callId: segment.callId,
-          }),
-        };
-        const result = await classifyTarget(
-          target,
-          options,
-          process.env,
-          logger,
-          firewallRuntime,
-        );
-        if (!result) {
-          observedForSession.delete(identity);
-          continue;
-        }
-        emitOpenCodeLocalEvidence(
-          target,
-          result,
-          options,
-          process.env,
-          "allowed",
-          false,
-        );
       }
     },
 
@@ -786,157 +706,6 @@ function legacyBlockMode(value: boolean | undefined): FirewallMode | undefined {
   return value === undefined ? undefined : value ? "block" : "shadow";
 }
 
-type OpenCodeTraceSegment = {
-  text: string;
-  hook: string;
-  source: string;
-  messageID?: string;
-  partID?: string;
-  role?: string;
-  toolName?: string;
-  callId?: string;
-};
-
-async function resolveParentSessionID(
-  input: PluginInput,
-  sessionID: string,
-  childSessions: Map<string, string>,
-): Promise<string | undefined> {
-  const cached = childSessions.get(sessionID);
-  if (cached) {
-    return cached;
-  }
-  try {
-    const response = await input.client.session.get({
-      path: { id: sessionID },
-      query: { directory: input.directory },
-    });
-    const session = readRecord(response.data);
-    const parentID = readString(session?.parentID);
-    if (parentID) {
-      childSessions.set(sessionID, parentID);
-    }
-    return parentID;
-  } catch {
-    return undefined;
-  }
-}
-
-async function readOpenCodeTraceSegments(
-  input: PluginInput,
-  sessionID: string,
-): Promise<OpenCodeTraceSegment[]> {
-  let messages: unknown;
-  try {
-    const response = await input.client.session.messages({
-      path: { id: sessionID },
-      query: { directory: input.directory },
-    });
-    messages = response.data;
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(messages)) {
-    return [];
-  }
-
-  const segments: OpenCodeTraceSegment[] = [];
-  for (const entry of messages) {
-    const messageEntry = readRecord(entry);
-    const info = readRecord(messageEntry?.info);
-    const role = readString(info?.role);
-    const messageID = readString(info?.id);
-    const parts = Array.isArray(messageEntry?.parts) ? messageEntry.parts : [];
-    for (const partValue of parts) {
-      const part = readRecord(partValue);
-      const partType = readString(part?.type);
-      const partID = readString(part?.id);
-      if (!part || !partType) {
-        continue;
-      }
-      if (partType === "text") {
-        const text = readString(part.text);
-        if (text) {
-          segments.push({
-            text,
-            hook: role === "assistant" ? HOOK_LABEL.LLM_OUTPUT : HOOK_LABEL.USER_INPUT,
-            source: "text",
-            messageID,
-            partID,
-            role,
-          });
-        }
-        continue;
-      }
-      if (partType === "reasoning") {
-        const text = readString(part.text);
-        if (text) {
-          segments.push({
-            text,
-            hook: HOOK_LABEL.LLM_OUTPUT,
-            source: "reasoning",
-            messageID,
-            partID,
-            role: "assistant",
-          });
-        }
-        continue;
-      }
-      if (partType === "subtask") {
-        const text = stableStringify(omitUndefined({
-          prompt: part.prompt,
-          description: part.description,
-          agent: part.agent,
-        }));
-        if (text.trim() && text !== "{}") {
-          segments.push({
-            text,
-            hook: HOOK_LABEL.USER_INPUT,
-            source: "subtask",
-            messageID,
-            partID,
-            role,
-          });
-        }
-        continue;
-      }
-      if (partType !== "tool") {
-        continue;
-      }
-      const state = readRecord(part.state);
-      const toolName = readString(part.tool);
-      const callId = readString(part.callID);
-      const inputText = stableStringify(state?.input);
-      if (inputText.trim()) {
-        segments.push({
-          text: inputText,
-          hook: HOOK_LABEL.TOOL_CALL,
-          source: "tool_input",
-          messageID,
-          partID,
-          role,
-          toolName,
-          callId,
-        });
-      }
-      const outputText = readString(state?.output) ?? readString(state?.error);
-      if (outputText) {
-        segments.push({
-          text: outputText,
-          hook: HOOK_LABEL.TOOL_RESPONSE,
-          source: readString(state?.status) === "error" ? "tool_error" : "tool_output",
-          messageID,
-          partID,
-          role,
-          toolName,
-          callId,
-        });
-      }
-    }
-  }
-  return segments;
-}
-
 function makeDebugLogger(input: PluginInput, options: RuntimeSource, env: RuntimeSource): DebugLogger {
   return async (event, fields = {}) => {
     if (!isDebugEnabled(options, env)) {
@@ -1166,8 +935,6 @@ export const __testInternals = {
   formatBlockReason,
   stableStringify,
   buildLogicalRequestId,
-  readOpenCodeTraceSegments,
-  resolveParentSessionID,
   buildDemoUrl,
   buildLocalProtectionEvent,
   emitLocalProtectionEvent,
