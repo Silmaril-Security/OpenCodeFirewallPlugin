@@ -111,18 +111,14 @@ SILMARIL_DEMO_BASE_URL="http://localhost:3001" node scripts/open-playground.mjs
 | `tool.execute.after` | tool output string | `tool_response` | exact pass-through | preserve output and record `block_unavailable` |
 | `experimental.text.complete` | assistant text | `llm_output` | exact pass-through | preserve output and record `block_unavailable` |
 | `session.created` for a child | child-session title | `user_input` | observe-only | none |
-| `session.idle` for a child | every visible child-session text, reasoning, subtask, and tool segment | segment-native hook | observe-only | none |
 
 opencode does not expose direct `Stop` or `SubagentStop` parity hooks. Assistant
 output classification is implemented through `experimental.text.complete`.
 Child sessions created by the `task` tool use the same normal hook surface under
-their own `sessionID`. The plugin also observes `session.created` and
-`session.idle`: when a child becomes idle, it fetches that child session's full
-host-visible message list and classifies every text, explicit reasoning part,
-subtask, tool input, and tool output once per content-sensitive part identity.
-These event callbacks are observe-only even when blocking is enabled because
-opencode provides no enforcement return channel there. Reasoning absent from
-the OpenCode session API remains unavailable to plugins.
+their own `sessionID`. The plugin observes `session.created` only for the current
+child lifecycle payload and never fetches session messages at `session.idle`.
+Every native event produces at most one classification, while the Firewall
+sequence cache owns conversation state from the incremental hook stream.
 
 Only `prediction === "MALICIOUS"` is enforceable. Scores, thresholds, outcomes,
 missing predictions, and unknown predictions remain diagnostic. Each OpenCode
