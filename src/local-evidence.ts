@@ -26,7 +26,7 @@ export type LocalProtectionEventInput = {
   toolName?: string;
   classification: ClassificationLike;
   policyDecision: "allow" | "monitor" | "warn" | "block";
-  nativeAction: "allowed" | "block_returned" | "warning_context_returned" | "unavailable";
+  nativeAction: "allowed" | "block_returned" | "content_replaced" | "warning_context_returned" | "unavailable";
   warnDelivery?: "delivered" | "unsupported";
   blockUnavailable?: boolean;
   pluginVersion: string;
@@ -140,7 +140,7 @@ export function buildLocalProtectionEvent(
     warnDelivery: input.warnDelivery,
     blockUnavailable: input.blockUnavailable,
     outcome: "not_observed",
-    evidenceTruth: input.nativeAction === "block_returned"
+    evidenceTruth: input.nativeAction === "block_returned" || input.nativeAction === "content_replaced"
       ? "native_response_returned"
       : "plugin_reported",
     evidenceCompleteness: "partial",

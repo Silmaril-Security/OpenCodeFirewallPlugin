@@ -1,6 +1,6 @@
 {
   "name": "@silmaril/opencode-firewall-plugin",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Classify opencode parent and child lifecycle events with Silmaril Firewall and render readable native block decisions.",
   "type": "module",
   "private": true,
