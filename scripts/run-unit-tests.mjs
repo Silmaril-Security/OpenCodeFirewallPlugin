@@ -423,14 +423,18 @@ test("chat.message and tool.execute.before: optional blocking throws before exec
     { tool: "bash", sessionID: "ses_1", callID: "call_1", args: {} },
     blockedCallOutput,
   );
-  assert.deepEqual(blockedCallOutput, { title: "done", output: "blocked tool response", metadata: {} });
+  assert.equal(blockedCallOutput.title, "Silmaril Firewall blocked tool result");
+  assert.match(blockedCallOutput.output, /original tool result was withheld/u);
+  assert.doesNotMatch(blockedCallOutput.output, /blocked tool response/u);
+  assert.deepEqual(blockedCallOutput.metadata, { silmaril: { blocked: true } });
 
   const output = { title: "done", output: "bad tool response", metadata: {} };
   await hooks["tool.execute.after"](
     { tool: "bash", sessionID: "ses_1", callID: "call_2", args: {} },
     output,
   );
-  assert.deepEqual(output, { title: "done", output: "bad tool response", metadata: {} });
+  assert.equal(output.title, "Silmaril Firewall blocked tool result");
+  assert.doesNotMatch(output.output, /bad tool response/u);
 });
 
 test("Warn preserves content and adds only the bounded warning on supported surfaces", async () => {
@@ -798,7 +802,7 @@ test("experimental.text.complete: classifies assistant output without mutating t
   assert.equal(output.text, "assistant secret text");
 });
 
-test("experimental.text.complete: Block records unsupported and preserves malicious assistant output", async () => {
+test("experimental.text.complete: Block replaces malicious assistant output", async () => {
   resetFirewallStub();
   globalThis.__silmarilFirewallClassify = async () => ({
     prediction: "MALICIOUS",
@@ -812,7 +816,8 @@ test("experimental.text.complete: Block records unsupported and preserves malici
     { sessionID: "ses_1", messageID: "msg_2", partID: "prt_2" },
     output,
   );
-  assert.equal(output.text, "assistant secret text");
+  assert.match(output.text, /original assistant output was withheld/u);
+  assert.doesNotMatch(output.text, /assistant secret text/u);
 });
 
 test("local evidence is redacted, correlated, and native-action honest", async () => {
@@ -830,7 +835,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
     },
     policyDecision: "allow",
     nativeAction: "allowed",
-    pluginVersion: "0.4.2",
+    pluginVersion: "0.4.3",
   });
   const serialized = JSON.stringify(event);
   assert.equal(event.schemaVersion, 1);
@@ -853,7 +858,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
     },
     policyDecision: "block",
     nativeAction: "block_returned",
-    pluginVersion: "0.4.2",
+    pluginVersion: "0.4.3",
   });
   assert.equal(blocked.evidenceTruth, "native_response_returned");
   assert.equal(JSON.stringify(blocked).includes("RAW_OPEN_CODE_SECRET"), false);
@@ -868,7 +873,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
       classification: { prediction: "BENIGN" },
       policyDecision: "allow",
       nativeAction: "allowed",
-      pluginVersion: "0.4.2",
+      pluginVersion: "0.4.3",
     }, { directory: root });
     assert.deepEqual(await readdir(root), [path.basename(destination)]);
     assert.equal((await stat(root)).mode & 0o777, 0o750);
@@ -966,7 +971,7 @@ test("demo launcher, tool, and OpenCode assets build public URLs without credent
 
 test("source and dependency invariants: SDK 0.6.0 and package is unpublished until licensed", async () => {
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.4.2");
+  assert.equal(packageJson.version, "0.4.3");
   assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.6.0");
   assert.equal(packageJson.devDependencies["@opencode-ai/plugin"], "1.18.4");
   assert.equal(packageJson.private, true);

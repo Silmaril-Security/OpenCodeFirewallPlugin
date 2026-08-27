@@ -2,7 +2,7 @@
 
 Silmaril Firewall native visibility hooks for opencode.
 
-This plugin classifies opencode lifecycle events with Silmaril Firewall. Shadow is silent, Warn preserves content and adds one bounded warning at supported same-turn context surfaces, and Block throws only at genuine pre-execution enforcement boundaries. Completed outputs are never replaced; unsupported Block boundaries remain unchanged and record `block_unavailable`.
+This plugin classifies opencode lifecycle events with Silmaril Firewall. Shadow is silent, Warn preserves content and adds one bounded warning at supported same-turn context surfaces, and Block throws at pre-execution boundaries or replaces malicious output at mutable post-execution boundaries.
 
 Silmaril is an AI application firewall that protects agent execution. It evaluates intent, application context, tool calls, and accumulated execution state together before harmful outcomes materialize.
 
@@ -108,8 +108,8 @@ SILMARIL_DEMO_BASE_URL="http://localhost:3001" node scripts/open-playground.mjs
 | --- | --- | --- | --- | --- |
 | `chat.message` | concatenated user text parts | `user_input` | silent | block malicious user message |
 | `tool.execute.before` | stable-serialized tool args | `tool_call` | silent | block malicious tool call |
-| `tool.execute.after` | tool output string | `tool_response` | exact pass-through | preserve output and record `block_unavailable` |
-| `experimental.text.complete` | assistant text | `llm_output` | exact pass-through | preserve output and record `block_unavailable` |
+| `tool.execute.after` | tool output string | `tool_response` | exact pass-through | replace malicious output before model reuse |
+| `experimental.text.complete` | assistant text | `llm_output` | exact pass-through | replace malicious output before delivery |
 | `session.created` for a child | child-session title | `user_input` | observe-only | none |
 
 opencode does not expose direct `Stop` or `SubagentStop` parity hooks. Assistant

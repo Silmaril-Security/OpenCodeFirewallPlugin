@@ -18,7 +18,7 @@ import {
 } from "./local-evidence.js";
 
 const PLUGIN_ID = "opencode-firewall-plugin";
-const PLUGIN_VERSION = "0.4.2";
+const PLUGIN_VERSION = "0.4.3";
 const DEFAULT_CLASSIFY_TIMEOUT_MS = 2500;
 const MIN_CLASSIFY_TIMEOUT_MS = 250;
 const MAX_CLASSIFY_TIMEOUT_MS = 10000;
@@ -258,12 +258,22 @@ export const SilmarilFirewallPlugin: Plugin = async (input, options = {}) => {
         result,
         options,
         process.env,
-        warned ? "warning_context_returned" : blocked ? "unavailable" : "allowed",
-        false,
+        warned ? "warning_context_returned" : blocked ? "content_replaced" : "allowed",
+        blocked,
         warned ? "delivered" : undefined,
       );
       if (warned) {
         output.output = appendBoundedWarning(output.output);
+      } else if (blocked) {
+        output.title = "Silmaril Firewall blocked tool result";
+        output.output = formatDecisionText(target, result, {
+          title: "Silmaril Firewall blocked potentially malicious content.",
+          action: "The original tool result was withheld before model reuse.",
+        });
+        output.metadata = {
+          ...output.metadata,
+          silmaril: { blocked: true },
+        };
       }
     },
 
@@ -282,16 +292,23 @@ export const SilmarilFirewallPlugin: Plugin = async (input, options = {}) => {
       if (!result) return;
       const mode = effectiveMode(result, options, process.env);
       const malicious = shouldBlockClassification(result);
-      const unavailable = malicious && (mode === "block" || mode === "warn");
+      const blocked = malicious && mode === "block";
+      const unavailable = malicious && mode === "warn";
       emitOpenCodeLocalEvidence(
         target,
         result,
         options,
         process.env,
-        unavailable ? "unavailable" : "allowed",
-        false,
+        blocked ? "content_replaced" : unavailable ? "unavailable" : "allowed",
+        blocked,
         mode === "warn" && malicious ? "unsupported" : undefined,
       );
+      if (blocked) {
+        output.text = formatDecisionText(target, result, {
+          title: "Silmaril Firewall blocked potentially malicious content.",
+          action: "The original assistant output was withheld before delivery.",
+        });
+      }
     },
   };
 };
