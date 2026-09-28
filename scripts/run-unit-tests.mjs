@@ -1271,7 +1271,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
     },
     policyDecision: "allow",
     nativeAction: "allowed",
-    pluginVersion: "0.4.3",
+    pluginVersion: "0.4.4",
   });
   const serialized = JSON.stringify(event);
   assert.equal(event.schemaVersion, 1);
@@ -1294,7 +1294,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
     },
     policyDecision: "block",
     nativeAction: "block_returned",
-    pluginVersion: "0.4.3",
+    pluginVersion: "0.4.4",
   });
   assert.equal(blocked.evidenceTruth, "native_response_returned");
   assert.equal(JSON.stringify(blocked).includes("RAW_OPEN_CODE_SECRET"), false);
@@ -1309,7 +1309,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
       classification: { prediction: "BENIGN" },
       policyDecision: "allow",
       nativeAction: "allowed",
-      pluginVersion: "0.4.3",
+      pluginVersion: "0.4.4",
     }, { directory: root });
     assert.deepEqual(await readdir(root), [path.basename(destination)]);
     assert.equal((await stat(root)).mode & 0o777, 0o750);
@@ -1407,7 +1407,7 @@ test("demo launcher, tool, and OpenCode assets build public URLs without credent
 
 test("source and dependency invariants: SDK 0.6.0 and package is unpublished until licensed", async () => {
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.4.3");
+  assert.equal(packageJson.version, "0.4.4");
   assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.6.0");
   assert.equal(packageJson.devDependencies["@opencode-ai/plugin"], "1.18.4");
   assert.equal(packageJson.private, true);
