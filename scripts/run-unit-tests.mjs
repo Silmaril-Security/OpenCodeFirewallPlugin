@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmod,
@@ -93,7 +94,18 @@ const t = mod.__testInternals;
 const tests = [];
 
 function test(name, fn) {
-  tests.push({ name, fn });
+  tests.push({
+    name,
+    fn: () => {
+      t.installDeviceNameLookupForTests({
+        platform: "linux",
+        exec() {
+          throw new Error("device name lookup must not run in this test");
+        },
+      });
+      return fn();
+    },
+  });
 }
 
 function resetFirewallStub() {
@@ -312,6 +324,430 @@ test("config and metadata use canonical plugin-owned endpoint provenance", () =>
     keep: true,
   });
 });
+
+test("provenance: classification does not wait for the computer name refresh", async () => {
+  let now = 1_000;
+  let finishLookup;
+  const lookup = new Promise((resolve) => {
+    finishLookup = resolve;
+  });
+  let lookups = 0;
+  let rawName = "  SilmarilComputerNameSentinel \n";
+  t.installDeviceNameLookupForTests({
+    platform: "darwin",
+    now: () => now,
+    exec(command, args, options) {
+      lookups += 1;
+      assert.equal(command, "/usr/sbin/scutil");
+      assert.deepEqual([...args], ["--get", "ComputerName"]);
+      assert.deepEqual(options, { timeout: 100, maxBuffer: 1024 });
+      return lookup.then(() => rawName);
+    },
+  });
+  resetFirewallStub();
+  const logs = [];
+  const hooks = await mod.SilmarilFirewallPlugin(mockInput(logs), pluginOptions({ debug: "true" }));
+  await hooks["chat.message"]({ sessionID: "ses_1", messageID: "msg_1" }, userMessageOutput("hello"));
+  assert.equal(globalThis.__silmarilFirewallCalls.length, 1);
+  assert.deepEqual(globalThis.__silmarilFirewallCalls[0].options.metadata.silmaril.provenance, {
+    schema_version: 1,
+    harness: "opencode",
+  });
+  assert.equal(JSON.stringify(logs).includes("SilmarilComputerNameSentinel"), false);
+  if (lookups === 0) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(lookups, 1);
+  assert.equal(Object.hasOwn(t.withProvenance({}).silmaril.provenance, "device_name"), false);
+  finishLookup();
+  await t.flushDeviceNameRefreshForTests();
+  assert.equal(t.withProvenance({
+    silmaril: { provenance: { device_name: "spoofed-name", harness: "spoofed" } },
+  }).silmaril.provenance.device_name, "SilmarilComputerNameSentinel");
+  assert.equal(Object.hasOwn(t.withProvenance({}).silmaril.provenance, "endpoint_id"), false);
+  await hooks["chat.message"]({ sessionID: "ses_1", messageID: "msg_2" }, userMessageOutput("again"));
+  assert.equal(globalThis.__silmarilFirewallCalls.at(-1).options.metadata.silmaril.provenance.device_name, "SilmarilComputerNameSentinel");
+  assert.equal(lookups, 1);
+  now += 5 * 60 * 1000 - 1;
+  t.withProvenance({});
+  await t.flushDeviceNameRefreshForTests();
+  assert.equal(lookups, 1);
+  now += 1;
+  rawName = "Renamed Computer";
+  assert.equal(t.withProvenance({}).silmaril.provenance.device_name, "SilmarilComputerNameSentinel");
+  await t.flushDeviceNameRefreshForTests();
+  assert.equal(lookups, 2);
+  assert.equal(t.withProvenance({}).silmaril.provenance.device_name, "Renamed Computer");
+});
+
+test("provenance: invalid computer names, including U+0085, are omitted", async () => {
+  const omitted = ["", " \n\t", "bad\u0000name", "bad\u001Fname", "bad\u007Fname", "bad\u0085name", "bad\u0080name", "bad\u009Fname", "a".repeat(257), "😀".repeat(129)];
+  for (const raw of omitted) {
+    t.installDeviceNameLookupForTests({
+      platform: "darwin",
+      now: () => 1_000,
+      exec: () => raw,
+    });
+    t.withProvenance({ silmaril: { provenance: { device_name: "spoofed-name" } } });
+    await t.flushDeviceNameRefreshForTests();
+    assert.equal(Object.hasOwn(t.withProvenance({}).silmaril.provenance, "device_name"), false);
+  }
+
+  t.installDeviceNameLookupForTests({
+    platform: "darwin",
+    now: () => 2_000,
+    exec() {
+      throw new Error("missing");
+    },
+  });
+  t.withProvenance({});
+  await t.flushDeviceNameRefreshForTests();
+  assert.equal(Object.hasOwn(t.withProvenance({}).silmaril.provenance, "device_name"), false);
+
+  for (const raw of [`${"a".repeat(256)}\n`, "😀".repeat(128)]) {
+    t.installDeviceNameLookupForTests({
+      platform: "darwin",
+      now: () => 3_000,
+      exec: () => raw,
+    });
+    t.withProvenance({});
+    await t.flushDeviceNameRefreshForTests();
+    assert.equal(t.withProvenance({}).silmaril.provenance.device_name, raw.trim());
+  }
+});
+
+test("provenance: spoofed device_name cannot overwrite the plugin lookup", async () => {
+  const endpointId = "2b64e603-f82a-4aec-9524-9736472dc80a";
+  t.installDeviceNameLookupForTests({
+    platform: "darwin",
+    now: () => 1_000,
+    exec: () => "Real Computer",
+  });
+  assert.equal(Object.hasOwn(t.withProvenance({
+    silmaril: {
+      integration: "opencode-firewall-plugin",
+      provenance: { endpoint_id: "spoofed", harness: "spoofed", device_name: "spoofed-name" },
+    },
+  }, endpointId).silmaril.provenance, "device_name"), false);
+  await t.flushDeviceNameRefreshForTests();
+  assert.deepEqual(t.withProvenance({
+    silmaril: {
+      integration: "opencode-firewall-plugin",
+      provenance: { endpoint_id: "spoofed", harness: "spoofed", device_name: "spoofed-name" },
+    },
+    keep: true,
+  }, endpointId), {
+    silmaril: {
+      integration: "opencode-firewall-plugin",
+      provenance: {
+        schema_version: 1,
+        endpoint_id: endpointId,
+        harness: "opencode",
+        device_name: "Real Computer",
+      },
+    },
+    keep: true,
+  });
+});
+
+test("provenance: non-darwin hosts omit device_name without lookup", async () => {
+  for (const platformName of ["linux", "win32", "freebsd"]) {
+    let called = false;
+    t.installDeviceNameLookupForTests({
+      platform: platformName,
+      exec() {
+        called = true;
+        return "Should Not Win";
+      },
+    });
+    const provenance = t.withProvenance({
+      silmaril: { provenance: { device_name: "spoofed-name" } },
+    }).silmaril.provenance;
+    await t.flushDeviceNameRefreshForTests();
+    assert.equal(called, false);
+    assert.equal(Object.hasOwn(provenance, "device_name"), false);
+    assert.equal(provenance.harness, "opencode");
+  }
+});
+
+test("provenance: computer name lookup failure still classifies", async () => {
+  let now = 4_000;
+  let lookups = 0;
+  t.installDeviceNameLookupForTests({
+    platform: "darwin",
+    now: () => now,
+    exec() {
+      lookups += 1;
+      throw new Error("scutil timed out");
+    },
+  });
+  resetFirewallStub();
+  const hooks = await mod.SilmarilFirewallPlugin(mockInput(), pluginOptions({
+    endpoint_id: "2b64e603-f82a-4aec-9524-9736472dc80a",
+  }));
+  await hooks["chat.message"]({ sessionID: "ses_1", messageID: "msg_1" }, userMessageOutput("hello"));
+  await t.flushDeviceNameRefreshForTests();
+  await hooks["chat.message"]({ sessionID: "ses_1", messageID: "msg_2" }, userMessageOutput("again"));
+  await t.flushDeviceNameRefreshForTests();
+  assert.equal(globalThis.__silmarilFirewallCalls.length, 2);
+  assert.equal(lookups, 1);
+  for (const call of globalThis.__silmarilFirewallCalls) {
+    assert.deepEqual(call.options.metadata.silmaril.provenance, {
+      schema_version: 1,
+      endpoint_id: "2b64e603-f82a-4aec-9524-9736472dc80a",
+      harness: "opencode",
+    });
+  }
+  now += 5 * 1000;
+  t.withProvenance({});
+  await t.flushDeviceNameRefreshForTests();
+  assert.equal(lookups, 2);
+});
+
+test("provenance: startup prefetch and proactive refresh cover sparse events", async () => {
+  let now = 10_000;
+  const timers = [];
+  let rawName = "Sparse Mac";
+  let lookups = 0;
+  let releaseLookup;
+  const lookup = new Promise((resolve) => {
+    releaseLookup = resolve;
+  });
+  t.installDeviceNameLookupForTests({
+    platform: "darwin",
+    now: () => now,
+    scheduleTimer(delay, callback) {
+      const entry = { delay, callback, unrefCalls: 0, cancelled: false };
+      timers.push(entry);
+      return {
+        unref() {
+          entry.unrefCalls += 1;
+        },
+        cancel() {
+          entry.cancelled = true;
+        },
+      };
+    },
+    exec() {
+      lookups += 1;
+      return lookup.then(() => rawName);
+    },
+  });
+  resetFirewallStub();
+  const hooks = await mod.SilmarilFirewallPlugin(mockInput(), pluginOptions());
+  assert.equal(lookups, 0);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(lookups, 1);
+  await hooks["chat.message"]({ sessionID: "ses_1", messageID: "msg_early" }, userMessageOutput("early"));
+  assert.equal(Object.hasOwn(
+    globalThis.__silmarilFirewallCalls.at(-1).options.metadata.silmaril.provenance,
+    "device_name",
+  ), false);
+  releaseLookup();
+  await t.flushDeviceNameRefreshForTests();
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].delay, 5 * 60 * 1000 - 30 * 1000);
+  assert.equal(timers[0].unrefCalls, 1);
+  assert.equal(timers[0].cancelled, false);
+  resetFirewallStub();
+  await hooks["chat.message"]({ sessionID: "ses_1", messageID: "msg_only" }, userMessageOutput("only"));
+  assert.equal(globalThis.__silmarilFirewallCalls.at(-1).options.metadata.silmaril.provenance.device_name, "Sparse Mac");
+  assert.equal(lookups, 1);
+
+  rawName = "Sparse Mac Renamed";
+  now += timers[0].delay;
+  assert.equal(timers[0].cancelled, false);
+  timers[0].callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  await t.flushDeviceNameRefreshForTests();
+  assert.equal(lookups, 2);
+  now = 10_000 + 5 * 60 * 1000 + 60 * 1000;
+  resetFirewallStub();
+  await hooks["chat.message"]({ sessionID: "ses_1", messageID: "msg_late" }, userMessageOutput("late"));
+  assert.equal(globalThis.__silmarilFirewallCalls.at(-1).options.metadata.silmaril.provenance.device_name, "Sparse Mac Renamed");
+  assert.equal(lookups, 2);
+});
+
+test("provenance: stale computer name stays available only inside the refresh window", async () => {
+  let now = 20_000;
+  let rawName = "Office Mac";
+  let lookups = 0;
+  let releaseRefresh;
+  let refresh = Promise.resolve();
+  const timers = [];
+  t.installDeviceNameLookupForTests({
+    platform: "darwin",
+    now: () => now,
+    scheduleTimer(delay, callback) {
+      const entry = { delay, callback, cancelled: false, unrefCalls: 0 };
+      timers.push(entry);
+      return {
+        unref() {
+          entry.unrefCalls += 1;
+        },
+        cancel() {
+          entry.cancelled = true;
+        },
+      };
+    },
+    exec() {
+      lookups += 1;
+      return refresh.then(() => rawName);
+    },
+  });
+  t.withProvenance({});
+  await new Promise((resolve) => setImmediate(resolve));
+  await t.flushDeviceNameRefreshForTests();
+  assert.equal(t.withProvenance({}).silmaril.provenance.device_name, "Office Mac");
+  assert.equal(lookups, 1);
+  assert.equal(timers[0].unrefCalls, 1);
+
+  refresh = new Promise((resolve) => {
+    releaseRefresh = resolve;
+  });
+  rawName = "Updated Mac";
+  now += 5 * 60 * 1000 + 1_000;
+  assert.equal(t.withProvenance({}).silmaril.provenance.device_name, "Office Mac");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(lookups, 2);
+  now += 30 * 1000;
+  assert.equal(Object.hasOwn(t.withProvenance({}).silmaril.provenance, "device_name"), false);
+  releaseRefresh();
+  await t.flushDeviceNameRefreshForTests();
+  assert.equal(t.withProvenance({}).silmaril.provenance.device_name, "Updated Mac");
+});
+
+test("provenance: computer name lookup settles when the child ignores SIGTERM", async () => {
+  const children = [];
+  const unhandled = [];
+  const onUnhandled = (reason) => {
+    unhandled.push(reason);
+  };
+  process.on("unhandledRejection", onUnhandled);
+  let now = 50_000;
+  const script = "process.on('SIGTERM', () => {}); process.stdout.write('READY\\n'); setInterval(() => {}, 1000);";
+  let readyChild;
+  try {
+    // Start the first child before the lookup deadline begins. Otherwise a slow
+    // CI runner can deliver SIGTERM before Node installs the test signal handler.
+    readyChild = spawn(process.execPath, ["-e", script], {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("test child did not become ready")), 5000);
+      readyChild.once("error", reject);
+      readyChild.stdout.once("data", (chunk) => {
+        clearTimeout(timeout);
+        assert.equal(String(chunk).trim(), "READY");
+        resolve();
+      });
+    });
+    t.installDeviceNameLookupForTests({
+      platform: "darwin",
+      now: () => now,
+      spawn(command, args, options) {
+        assert.equal(command, "/usr/sbin/scutil");
+        assert.deepEqual([...args], ["--get", "ComputerName"]);
+        const child = readyChild ?? spawn(process.execPath, ["-e", script], options);
+        readyChild = undefined;
+        const signals = [];
+        const kill = child.kill.bind(child);
+        child.kill = (signal) => {
+          signals.push(signal ?? "SIGTERM");
+          return kill(signal);
+        };
+        let unrefCalls = 0;
+        const unref = child.unref.bind(child);
+        child.unref = () => {
+          unrefCalls += 1;
+          return unref();
+        };
+        let stdoutDestroyed = false;
+        const destroy = child.stdout.destroy.bind(child.stdout);
+        child.stdout.destroy = () => {
+          stdoutDestroyed = true;
+          return destroy();
+        };
+        children.push({ child, signals, unrefCalls: () => unrefCalls, stdoutDestroyed: () => stdoutDestroyed });
+        return child;
+      },
+    });
+    resetFirewallStub();
+    const hooks = await mod.SilmarilFirewallPlugin(mockInput(), pluginOptions());
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(children.length, 1);
+    const classified = await Promise.race([
+      hooks["chat.message"]({ sessionID: "ses_1", messageID: "msg_1" }, userMessageOutput("hello")).then(() => "classified"),
+      new Promise((resolve) => setTimeout(() => resolve("pending"), 1000)),
+    ]);
+    assert.equal(classified, "classified");
+    assert.equal(globalThis.__silmarilFirewallCalls.length, 1);
+    assert.equal(Object.hasOwn(
+      globalThis.__silmarilFirewallCalls[0].options.metadata.silmaril.provenance,
+      "device_name",
+    ), false);
+    assert.equal(children[0].child.exitCode, null);
+    assert.equal(children[0].child.signalCode, null);
+
+    const settled = await Promise.race([
+      t.flushDeviceNameRefreshForTests().then(() => "settled"),
+      new Promise((resolve) => setTimeout(() => resolve("pending"), 1000)),
+    ]);
+    assert.equal(settled, "settled");
+    assert.equal(children[0].child.exitCode, null);
+    assert.equal(children[0].signals[0], "SIGTERM");
+    assert.equal(children[0].stdoutDestroyed(), true);
+    assert.ok(children[0].unrefCalls() >= 1);
+
+    await waitForChildExit(children[0].child);
+    assert.ok(children[0].signals.includes("SIGKILL"));
+    assert.equal(children[0].child.signalCode, "SIGKILL");
+    await new Promise((resolve) => setImmediate(resolve));
+    const handles = process._getActiveHandles();
+    assert.equal(handles.includes(children[0].child), false);
+    assert.equal(handles.includes(children[0].child.stdout), false);
+
+    now += 5 * 1000;
+    t.withProvenance({});
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(children.length, 2);
+    const retried = await Promise.race([
+      t.flushDeviceNameRefreshForTests().then(() => "settled"),
+      new Promise((resolve) => setTimeout(() => resolve("pending"), 1000)),
+    ]);
+    assert.equal(retried, "settled");
+    await waitForChildExit(children[1].child);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(process._getActiveHandles().includes(children[1].child), false);
+    assert.deepEqual(unhandled, []);
+  } finally {
+    readyChild?.kill("SIGKILL");
+    process.off("unhandledRejection", onUnhandled);
+    for (const entry of children) {
+      try {
+        if (entry.child.exitCode === null && entry.child.signalCode === null) {
+          entry.child.kill("SIGKILL");
+        }
+      } catch {
+        // The child may already be gone.
+      }
+    }
+  }
+});
+
+function waitForChildExit(child) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("computer name child stayed alive")), 1000);
+    child.once("close", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
 
 test("stableStringify sorts objects and handles circular values", () => {
   const circular = { z: 1, a: 2n };
