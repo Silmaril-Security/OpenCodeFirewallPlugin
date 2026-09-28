@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { platform } from "node:os";
 import type {
   Plugin,
@@ -30,7 +30,10 @@ const MAC_COMPUTER_NAME_TIMEOUT_MS = 100;
 const MAC_COMPUTER_NAME_MAX_OUTPUT_BYTES = 1024;
 const MAC_COMPUTER_NAME_MAX_CODE_UNITS = 256;
 const MAC_COMPUTER_NAME_CACHE_TTL_MS = 5 * 60 * 1000;
+const MAC_COMPUTER_NAME_REFRESH_LEAD_MS = 30 * 1000;
+const MAC_COMPUTER_NAME_STALE_WINDOW_MS = 30 * 1000;
 const MAC_COMPUTER_NAME_FAILURE_RETRY_MS = 5 * 1000;
+const MAC_COMPUTER_NAME_KILL_GRACE_MS = 50;
 const MAC_COMPUTER_NAME_CONTROL_CHARS = /[\u0000-\u001F\u007F-\u009F]/;
 
 const HOOK_LABEL = {
@@ -87,6 +90,8 @@ type FirewallRuntime = {
 };
 
 export const SilmarilFirewallPlugin: Plugin = async (input, options = {}) => {
+  // Optional provenance. Never awaited, so a failed lookup cannot delay hooks.
+  prefetchMacComputerName();
   const logger = makeDebugLogger(input, options, process.env);
   const firewallRuntime = createFirewallRuntime();
 
@@ -906,19 +911,37 @@ type MacComputerNameExec = (
   options: { timeout: number; maxBuffer: number },
 ) => string | Promise<string>;
 
+type MacComputerNameSpawn = (
+  command: string,
+  args: readonly string[],
+  options: {
+    windowsHide: boolean;
+    stdio: ["ignore", "pipe", "ignore"];
+  },
+) => ChildProcess;
+
+type MacComputerNameTimerHandle = {
+  unref(): void;
+  cancel?(): void;
+};
+
 type MacComputerNameLookupOverrides = {
   platform?: NodeJS.Platform;
   now?: () => number;
   exec?: MacComputerNameExec;
+  spawn?: MacComputerNameSpawn;
+  scheduleTimer?: (delayMs: number, callback: () => void) => MacComputerNameTimerHandle;
 };
 
 let macComputerNameLookupOverrides: MacComputerNameLookupOverrides = {};
 let macComputerNameCache: { value: string; cachedAt: number } | undefined;
 let macComputerNameRetryNotBefore = 0;
 let macComputerNameRefresh: Promise<void> | undefined;
+let macComputerNameRefreshTimer: MacComputerNameTimerHandle | undefined;
 let macComputerNameGeneration = 0;
 
 function installDeviceNameLookupForTests(overrides: MacComputerNameLookupOverrides = {}): void {
+  clearMacComputerNameRefreshTimer();
   macComputerNameGeneration += 1;
   macComputerNameLookupOverrides = overrides;
   macComputerNameCache = undefined;
@@ -949,6 +972,15 @@ function normalizeMacComputerName(raw: unknown): string | undefined {
   return name;
 }
 
+function spawnMacComputerNameCommand(command: string, args: readonly string[]): ChildProcess {
+  const options = {
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "ignore"] as ["ignore", "pipe", "ignore"],
+  };
+  const spawnCommand = macComputerNameLookupOverrides.spawn ?? spawn;
+  return spawnCommand(command, args, options);
+}
+
 function defaultMacComputerNameExec(
   command: string,
   args: readonly string[],
@@ -956,47 +988,93 @@ function defaultMacComputerNameExec(
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     let settled = false;
-    const fail = () => {
+    let child: ChildProcess | undefined;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+
+    const finish = (settle: () => void) => {
       if (settled) return;
       settled = true;
-      reject(new Error("computer_name_lookup_failed"));
+      clearTimeout(deadline);
+      settle();
     };
-    let child;
+    const fail = () => {
+      finish(() => reject(new Error("computer_name_lookup_failed")));
+    };
+    const detachChild = () => {
+      try {
+        child?.stdout?.destroy();
+      } catch {
+        // Closing the pipe is best-effort.
+      }
+      try {
+        child?.unref();
+      } catch {
+        // The child may already have exited.
+      }
+    };
+    const signalChild = (signal: NodeJS.Signals) => {
+      try {
+        child?.kill(signal);
+      } catch {
+        // The child may already have exited.
+      }
+    };
+    const abandon = () => {
+      if (settled) return;
+      signalChild("SIGTERM");
+      if (settled) return;
+      detachChild();
+      clearTimeout(killTimer);
+      // The grace timer stays referenced so SIGKILL still runs, then every
+      // handle is released. A child that ignores SIGTERM cannot pin the process.
+      killTimer = setTimeout(() => {
+        signalChild("SIGKILL");
+        detachChild();
+      }, MAC_COMPUTER_NAME_KILL_GRACE_MS);
+      fail();
+    };
+
     try {
-      child = spawn(command, [...args], {
-        windowsHide: true,
-        stdio: ["ignore", "pipe", "ignore"],
-      });
+      child = spawnMacComputerNameCommand(command, args);
     } catch {
       fail();
       return;
     }
-    const chunks: Buffer[] = [];
-    let bytes = 0;
-    const timer = setTimeout(() => {
-      child.kill();
+
+    deadline = setTimeout(() => {
+      abandon();
     }, options.timeout);
-    child.stdout?.on("data", (chunk: Buffer) => {
-      bytes += chunk.length;
+    child.stdout?.on("error", () => {
+      // Destroying the pipe can emit EPIPE. The lookup result does not depend on it.
+    });
+    child.stdout?.on("data", (chunk: Buffer | string) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      bytes += buffer.length;
       if (bytes > options.maxBuffer) {
-        child.kill();
+        abandon();
         return;
       }
-      chunks.push(chunk);
+      chunks.push(buffer);
     });
     child.on("error", () => {
-      clearTimeout(timer);
+      clearTimeout(deadline);
+      clearTimeout(killTimer);
+      detachChild();
       fail();
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
+      clearTimeout(deadline);
+      clearTimeout(killTimer);
+      detachChild();
       if (settled) return;
       if (code !== 0 || bytes > options.maxBuffer) {
         fail();
         return;
       }
-      settled = true;
-      resolve(Buffer.concat(chunks).toString("utf8"));
+      finish(() => resolve(Buffer.concat(chunks).toString("utf8")));
     });
   });
 }
@@ -1021,7 +1099,86 @@ async function lookupMacComputerName(): Promise<string | undefined> {
   }
 }
 
+function clearMacComputerNameRefreshTimer(): void {
+  const timer = macComputerNameRefreshTimer;
+  macComputerNameRefreshTimer = undefined;
+  try {
+    timer?.cancel?.();
+  } catch {
+    // Cancel is best-effort.
+  }
+}
+
+function defaultMacComputerNameTimer(
+  delayMs: number,
+  callback: () => void,
+): MacComputerNameTimerHandle {
+  const timer = setTimeout(() => {
+    try {
+      callback();
+    } catch {
+      // A background refresh must not surface as an uncaught exception.
+    }
+  }, delayMs);
+  return {
+    unref() {
+      timer.unref();
+    },
+    cancel() {
+      clearTimeout(timer);
+    },
+  };
+}
+
+function armMacComputerNameTimer(delayMs: number, generation: number, releaseBackoff: boolean): void {
+  clearMacComputerNameRefreshTimer();
+  const schedule = macComputerNameLookupOverrides.scheduleTimer ?? defaultMacComputerNameTimer;
+  const armed: { handle?: MacComputerNameTimerHandle } = {};
+  try {
+    armed.handle = schedule(Math.max(0, delayMs), () => {
+      if (macComputerNameRefreshTimer === armed.handle) {
+        macComputerNameRefreshTimer = undefined;
+      }
+      if (generation !== macComputerNameGeneration) return;
+      if (releaseBackoff) {
+        macComputerNameRetryNotBefore = 0;
+      }
+      try {
+        scheduleMacComputerNameRefresh();
+      } catch {
+        // A background refresh must not surface as an uncaught exception.
+      }
+    });
+  } catch {
+    return;
+  }
+  macComputerNameRefreshTimer = armed.handle;
+  try {
+    armed.handle.unref();
+  } catch {
+    // A timer that cannot be unref'd is still cancelled on the next refresh.
+  }
+}
+
+function macComputerNameIsServable(cachedAt: number, now: number): boolean {
+  return now >= cachedAt && now - cachedAt < MAC_COMPUTER_NAME_CACHE_TTL_MS + MAC_COMPUTER_NAME_STALE_WINDOW_MS;
+}
+
+function rememberMacComputerNameFailure(generation: number, stamped: number): void {
+  if (generation !== macComputerNameGeneration) return;
+  macComputerNameRetryNotBefore = stamped + MAC_COMPUTER_NAME_FAILURE_RETRY_MS;
+  const cached = macComputerNameCache;
+  if (!cached || !macComputerNameIsServable(cached.cachedAt, stamped)) {
+    macComputerNameCache = undefined;
+    clearMacComputerNameRefreshTimer();
+    return;
+  }
+  // Keep the last validated name through the stale window and try again before it ends.
+  armMacComputerNameTimer(MAC_COMPUTER_NAME_FAILURE_RETRY_MS, generation, true);
+}
+
 function scheduleMacComputerNameRefresh(): void {
+  if (macComputerNamePlatform() !== "darwin") return;
   if (macComputerNameRefresh || macComputerNameNow() < macComputerNameRetryNotBefore) {
     return;
   }
@@ -1035,15 +1192,18 @@ function scheduleMacComputerNameRefresh(): void {
           if (value) {
             macComputerNameCache = { value, cachedAt: stamped };
             macComputerNameRetryNotBefore = 0;
+            armMacComputerNameTimer(
+              MAC_COMPUTER_NAME_CACHE_TTL_MS - MAC_COMPUTER_NAME_REFRESH_LEAD_MS,
+              generation,
+              false,
+            );
             return;
           }
-          macComputerNameCache = undefined;
-          macComputerNameRetryNotBefore = stamped + MAC_COMPUTER_NAME_FAILURE_RETRY_MS;
+          rememberMacComputerNameFailure(generation, stamped);
         })
         .catch(() => {
           if (generation !== macComputerNameGeneration) return;
-          macComputerNameCache = undefined;
-          macComputerNameRetryNotBefore = macComputerNameNow() + MAC_COMPUTER_NAME_FAILURE_RETRY_MS;
+          rememberMacComputerNameFailure(generation, macComputerNameNow());
         })
         .finally(() => {
           if (generation === macComputerNameGeneration) {
@@ -1055,24 +1215,39 @@ function scheduleMacComputerNameRefresh(): void {
   });
 }
 
+function prefetchMacComputerName(): void {
+  try {
+    if (macComputerNamePlatform() !== "darwin") return;
+    scheduleMacComputerNameRefresh();
+  } catch {
+    // Computer-name provenance is optional.
+  }
+}
+
 function flushDeviceNameRefreshForTests(): Promise<void> {
   return macComputerNameRefresh ?? Promise.resolve();
 }
 
 function readCachedMacComputerName(): string | undefined {
-  // OpenCode stays running, so keep the name in memory. Start a refresh without
-  // waiting on it, and wait five seconds before retrying a failed lookup.
+  // Return a cached name without waiting. Refresh before TTL on a long-lived
+  // process, and keep a validated name for a short stale window while that
+  // refresh is in flight. The first event before the initial lookup succeeds
+  // omits device_name.
   try {
     if (macComputerNamePlatform() !== "darwin") {
       return undefined;
     }
     const now = macComputerNameNow();
-    if (
-      macComputerNameCache
-      && now >= macComputerNameCache.cachedAt
-      && now - macComputerNameCache.cachedAt < MAC_COMPUTER_NAME_CACHE_TTL_MS
-    ) {
-      return macComputerNameCache.value;
+    const cached = macComputerNameCache;
+    if (cached && now >= cached.cachedAt) {
+      const age = now - cached.cachedAt;
+      if (age < MAC_COMPUTER_NAME_CACHE_TTL_MS) {
+        return cached.value;
+      }
+      if (age < MAC_COMPUTER_NAME_CACHE_TTL_MS + MAC_COMPUTER_NAME_STALE_WINDOW_MS) {
+        scheduleMacComputerNameRefresh();
+        return cached.value;
+      }
     }
     scheduleMacComputerNameRefresh();
     return undefined;
