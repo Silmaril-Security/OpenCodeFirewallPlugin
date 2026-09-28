@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { platform } from "node:os";
 import type {
   Plugin,
@@ -30,7 +30,8 @@ const MAC_COMPUTER_NAME_TIMEOUT_MS = 100;
 const MAC_COMPUTER_NAME_MAX_OUTPUT_BYTES = 1024;
 const MAC_COMPUTER_NAME_MAX_CODE_UNITS = 256;
 const MAC_COMPUTER_NAME_CACHE_TTL_MS = 5 * 60 * 1000;
-const MAC_COMPUTER_NAME_CONTROL_CHARS = /[\u0000-\u001F\u007F]/;
+const MAC_COMPUTER_NAME_FAILURE_RETRY_MS = 5 * 1000;
+const MAC_COMPUTER_NAME_CONTROL_CHARS = /[\u0000-\u001F\u007F-\u009F]/;
 
 const HOOK_LABEL = {
   USER_INPUT: "user_input",
@@ -903,7 +904,7 @@ type MacComputerNameExec = (
   command: string,
   args: readonly string[],
   options: { timeout: number; maxBuffer: number },
-) => string;
+) => string | Promise<string>;
 
 type MacComputerNameLookupOverrides = {
   platform?: NodeJS.Platform;
@@ -912,11 +913,25 @@ type MacComputerNameLookupOverrides = {
 };
 
 let macComputerNameLookupOverrides: MacComputerNameLookupOverrides = {};
-let macComputerNameCache: { value: string | undefined; cachedAt: number } | undefined;
+let macComputerNameCache: { value: string; cachedAt: number } | undefined;
+let macComputerNameRetryNotBefore = 0;
+let macComputerNameRefresh: Promise<void> | undefined;
+let macComputerNameGeneration = 0;
 
 function installDeviceNameLookupForTests(overrides: MacComputerNameLookupOverrides = {}): void {
+  macComputerNameGeneration += 1;
   macComputerNameLookupOverrides = overrides;
   macComputerNameCache = undefined;
+  macComputerNameRetryNotBefore = 0;
+  macComputerNameRefresh = undefined;
+}
+
+function macComputerNameNow(): number {
+  return macComputerNameLookupOverrides.now?.() ?? Date.now();
+}
+
+function macComputerNamePlatform(): NodeJS.Platform {
+  return macComputerNameLookupOverrides.platform ?? platform();
 }
 
 function normalizeMacComputerName(raw: unknown): string | undefined {
@@ -938,28 +953,62 @@ function defaultMacComputerNameExec(
   command: string,
   args: readonly string[],
   options: { timeout: number; maxBuffer: number },
-): string {
-  const result = spawnSync(command, [...args], {
-    encoding: "utf8",
-    timeout: options.timeout,
-    maxBuffer: options.maxBuffer,
-    windowsHide: true,
-    stdio: ["ignore", "pipe", "ignore"],
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const fail = () => {
+      if (settled) return;
+      settled = true;
+      reject(new Error("computer_name_lookup_failed"));
+    };
+    let child;
+    try {
+      child = spawn(command, [...args], {
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+    } catch {
+      fail();
+      return;
+    }
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    const timer = setTimeout(() => {
+      child.kill();
+    }, options.timeout);
+    child.stdout?.on("data", (chunk: Buffer) => {
+      bytes += chunk.length;
+      if (bytes > options.maxBuffer) {
+        child.kill();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    child.on("error", () => {
+      clearTimeout(timer);
+      fail();
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (settled) return;
+      if (code !== 0 || bytes > options.maxBuffer) {
+        fail();
+        return;
+      }
+      settled = true;
+      resolve(Buffer.concat(chunks).toString("utf8"));
+    });
   });
-  if (result.error || result.status !== 0 || typeof result.stdout !== "string") {
-    throw new Error("computer_name_lookup_failed");
-  }
-  return result.stdout;
 }
 
-function readMacComputerNameUncached(): string | undefined {
+async function lookupMacComputerName(): Promise<string | undefined> {
   // macOS Sharing Computer Name from scutil ComputerName.
-  if ((macComputerNameLookupOverrides.platform ?? process.platform) !== "darwin") {
+  if (macComputerNamePlatform() !== "darwin") {
     return undefined;
   }
   try {
     const exec = macComputerNameLookupOverrides.exec ?? defaultMacComputerNameExec;
-    return normalizeMacComputerName(exec(
+    return normalizeMacComputerName(await exec(
       MAC_COMPUTER_NAME_COMMAND,
       MAC_COMPUTER_NAME_ARGS,
       {
@@ -972,18 +1021,64 @@ function readMacComputerNameUncached(): string | undefined {
   }
 }
 
-function readCachedMacComputerName(): string | undefined {
-  const now = macComputerNameLookupOverrides.now?.() ?? Date.now();
-  if (
-    macComputerNameCache
-    && now >= macComputerNameCache.cachedAt
-    && now - macComputerNameCache.cachedAt < MAC_COMPUTER_NAME_CACHE_TTL_MS
-  ) {
-    return macComputerNameCache.value;
+function scheduleMacComputerNameRefresh(): void {
+  if (macComputerNameRefresh || macComputerNameNow() < macComputerNameRetryNotBefore) {
+    return;
   }
-  const value = readMacComputerNameUncached();
-  macComputerNameCache = { value, cachedAt: now };
-  return value;
+  const generation = macComputerNameGeneration;
+  macComputerNameRefresh = new Promise((resolve) => {
+    setImmediate(() => {
+      lookupMacComputerName()
+        .then((value) => {
+          if (generation !== macComputerNameGeneration) return;
+          const stamped = macComputerNameNow();
+          if (value) {
+            macComputerNameCache = { value, cachedAt: stamped };
+            macComputerNameRetryNotBefore = 0;
+            return;
+          }
+          macComputerNameCache = undefined;
+          macComputerNameRetryNotBefore = stamped + MAC_COMPUTER_NAME_FAILURE_RETRY_MS;
+        })
+        .catch(() => {
+          if (generation !== macComputerNameGeneration) return;
+          macComputerNameCache = undefined;
+          macComputerNameRetryNotBefore = macComputerNameNow() + MAC_COMPUTER_NAME_FAILURE_RETRY_MS;
+        })
+        .finally(() => {
+          if (generation === macComputerNameGeneration) {
+            macComputerNameRefresh = undefined;
+          }
+          resolve();
+        });
+    });
+  });
+}
+
+function flushDeviceNameRefreshForTests(): Promise<void> {
+  return macComputerNameRefresh ?? Promise.resolve();
+}
+
+function readCachedMacComputerName(): string | undefined {
+  // OpenCode stays running, so keep the name in memory. Start a refresh without
+  // waiting on it, and wait five seconds before retrying a failed lookup.
+  try {
+    if (macComputerNamePlatform() !== "darwin") {
+      return undefined;
+    }
+    const now = macComputerNameNow();
+    if (
+      macComputerNameCache
+      && now >= macComputerNameCache.cachedAt
+      && now - macComputerNameCache.cachedAt < MAC_COMPUTER_NAME_CACHE_TTL_MS
+    ) {
+      return macComputerNameCache.value;
+    }
+    scheduleMacComputerNameRefresh();
+    return undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function withProvenance(
@@ -1034,6 +1129,7 @@ export const __testInternals = {
   buildMetadata,
   withProvenance,
   installDeviceNameLookupForTests,
+  flushDeviceNameRefreshForTests,
   extractUserText,
   appendBoundedWarning,
   appendWarningToUserMessage,

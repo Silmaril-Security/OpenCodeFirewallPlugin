@@ -324,86 +324,110 @@ test("config and metadata use canonical plugin-owned endpoint provenance", () =>
   });
 });
 
-test("provenance: macOS Sharing Computer Name is sent to classify", async () => {
-  const lookups = [];
+test("provenance: classification does not wait for the computer name refresh", async () => {
   let now = 1_000;
+  let finishLookup;
+  const lookup = new Promise((resolve) => {
+    finishLookup = resolve;
+  });
+  let lookups = 0;
+  let rawName = "  SilmarilComputerNameSentinel \n";
   t.installDeviceNameLookupForTests({
     platform: "darwin",
     now: () => now,
     exec(command, args, options) {
-      lookups.push({ command, args: [...args], options: { ...options } });
-      return "  SilmarilComputerNameSentinel \n";
+      lookups += 1;
+      assert.equal(command, "/usr/sbin/scutil");
+      assert.deepEqual([...args], ["--get", "ComputerName"]);
+      assert.deepEqual(options, { timeout: 100, maxBuffer: 1024 });
+      return lookup.then(() => rawName);
     },
   });
-
   resetFirewallStub();
   const logs = [];
   const hooks = await mod.SilmarilFirewallPlugin(mockInput(logs), pluginOptions({ debug: "true" }));
-  const output = userMessageOutput("hello");
-  await hooks["chat.message"]({
-    sessionID: "ses_1",
-    messageID: "msg_1",
-  }, output);
-
-  assert.deepEqual(lookups, [{
-    command: "/usr/sbin/scutil",
-    args: ["--get", "ComputerName"],
-    options: { timeout: 100, maxBuffer: 1024 },
-  }]);
+  await hooks["chat.message"]({ sessionID: "ses_1", messageID: "msg_1" }, userMessageOutput("hello"));
   assert.equal(globalThis.__silmarilFirewallCalls.length, 1);
   assert.deepEqual(globalThis.__silmarilFirewallCalls[0].options.metadata.silmaril.provenance, {
     schema_version: 1,
     harness: "opencode",
-    device_name: "SilmarilComputerNameSentinel",
   });
   assert.equal(JSON.stringify(logs).includes("SilmarilComputerNameSentinel"), false);
-
-  t.withProvenance({});
-  assert.equal(lookups.length, 1);
+  assert.equal(lookups, 0);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(lookups, 1);
+  assert.equal(Object.hasOwn(t.withProvenance({}).silmaril.provenance, "device_name"), false);
+  finishLookup();
+  await t.flushDeviceNameRefreshForTests();
+  assert.equal(t.withProvenance({
+    silmaril: { provenance: { device_name: "spoofed-name", harness: "spoofed" } },
+  }).silmaril.provenance.device_name, "SilmarilComputerNameSentinel");
+  assert.equal(Object.hasOwn(t.withProvenance({}).silmaril.provenance, "endpoint_id"), false);
+  await hooks["chat.message"]({ sessionID: "ses_1", messageID: "msg_2" }, userMessageOutput("again"));
+  assert.equal(globalThis.__silmarilFirewallCalls.at(-1).options.metadata.silmaril.provenance.device_name, "SilmarilComputerNameSentinel");
+  assert.equal(lookups, 1);
   now += 5 * 60 * 1000 - 1;
   t.withProvenance({});
-  assert.equal(lookups.length, 1);
+  await t.flushDeviceNameRefreshForTests();
+  assert.equal(lookups, 1);
   now += 1;
-  assert.equal(t.withProvenance({}).silmaril.provenance.device_name, "SilmarilComputerNameSentinel");
-  assert.equal(lookups.length, 2);
+  rawName = "Renamed Computer";
+  assert.equal(Object.hasOwn(t.withProvenance({}).silmaril.provenance, "device_name"), false);
+  await t.flushDeviceNameRefreshForTests();
+  assert.equal(lookups, 2);
+  assert.equal(t.withProvenance({}).silmaril.provenance.device_name, "Renamed Computer");
 });
 
-test("provenance: invalid or missing computer names are omitted", () => {
-  const omitted = ["", " \n\t", "bad\u0000name", "bad\u001Fname", "bad\u007Fname", "a".repeat(257), "😀".repeat(129)];
+test("provenance: invalid computer names, including U+0085, are omitted", async () => {
+  const omitted = ["", " \n\t", "bad\u0000name", "bad\u001Fname", "bad\u007Fname", "bad\u0085name", "bad\u0080name", "bad\u009Fname", "a".repeat(257), "😀".repeat(129)];
   for (const raw of omitted) {
     t.installDeviceNameLookupForTests({
       platform: "darwin",
+      now: () => 1_000,
       exec: () => raw,
     });
+    t.withProvenance({ silmaril: { provenance: { device_name: "spoofed-name" } } });
+    await t.flushDeviceNameRefreshForTests();
     assert.equal(Object.hasOwn(t.withProvenance({}).silmaril.provenance, "device_name"), false);
   }
 
   t.installDeviceNameLookupForTests({
     platform: "darwin",
+    now: () => 2_000,
     exec() {
       throw new Error("missing");
     },
   });
+  t.withProvenance({});
+  await t.flushDeviceNameRefreshForTests();
   assert.equal(Object.hasOwn(t.withProvenance({}).silmaril.provenance, "device_name"), false);
 
-  t.installDeviceNameLookupForTests({
-    platform: "darwin",
-    exec: () => `${"a".repeat(256)}\n`,
-  });
-  assert.equal(t.withProvenance({}).silmaril.provenance.device_name, "a".repeat(256));
-  t.installDeviceNameLookupForTests({
-    platform: "darwin",
-    exec: () => "😀".repeat(128),
-  });
-  assert.equal(t.withProvenance({}).silmaril.provenance.device_name, "😀".repeat(128));
+  for (const raw of [`${"a".repeat(256)}\n`, "😀".repeat(128)]) {
+    t.installDeviceNameLookupForTests({
+      platform: "darwin",
+      now: () => 3_000,
+      exec: () => raw,
+    });
+    t.withProvenance({});
+    await t.flushDeviceNameRefreshForTests();
+    assert.equal(t.withProvenance({}).silmaril.provenance.device_name, raw.trim());
+  }
 });
 
-test("provenance: spoofed device_name cannot overwrite the plugin lookup", () => {
+test("provenance: spoofed device_name cannot overwrite the plugin lookup", async () => {
   const endpointId = "2b64e603-f82a-4aec-9524-9736472dc80a";
   t.installDeviceNameLookupForTests({
     platform: "darwin",
+    now: () => 1_000,
     exec: () => "Real Computer",
   });
+  assert.equal(Object.hasOwn(t.withProvenance({
+    silmaril: {
+      integration: "opencode-firewall-plugin",
+      provenance: { endpoint_id: "spoofed", harness: "spoofed", device_name: "spoofed-name" },
+    },
+  }, endpointId).silmaril.provenance, "device_name"), false);
+  await t.flushDeviceNameRefreshForTests();
   assert.deepEqual(t.withProvenance({
     silmaril: {
       integration: "opencode-firewall-plugin",
@@ -422,26 +446,13 @@ test("provenance: spoofed device_name cannot overwrite the plugin lookup", () =>
     },
     keep: true,
   });
-
-  t.installDeviceNameLookupForTests({
-    platform: "darwin",
-    exec() {
-      throw new Error("lookup failed");
-    },
-  });
-  assert.deepEqual(t.withProvenance({
-    silmaril: { provenance: { device_name: "spoofed-name", harness: "spoofed" } },
-  }).silmaril.provenance, {
-    schema_version: 1,
-    harness: "opencode",
-  });
 });
 
-test("provenance: non-darwin hosts omit device_name without lookup", () => {
-  for (const platform of ["linux", "win32", "freebsd"]) {
+test("provenance: non-darwin hosts omit device_name without lookup", async () => {
+  for (const platformName of ["linux", "win32", "freebsd"]) {
     let called = false;
     t.installDeviceNameLookupForTests({
-      platform,
+      platform: platformName,
       exec() {
         called = true;
         return "Should Not Win";
@@ -450,6 +461,7 @@ test("provenance: non-darwin hosts omit device_name without lookup", () => {
     const provenance = t.withProvenance({
       silmaril: { provenance: { device_name: "spoofed-name" } },
     }).silmaril.provenance;
+    await t.flushDeviceNameRefreshForTests();
     assert.equal(called, false);
     assert.equal(Object.hasOwn(provenance, "device_name"), false);
     assert.equal(provenance.harness, "opencode");
@@ -457,9 +469,11 @@ test("provenance: non-darwin hosts omit device_name without lookup", () => {
 });
 
 test("provenance: computer name lookup failure still classifies", async () => {
+  let now = 4_000;
   let lookups = 0;
   t.installDeviceNameLookupForTests({
     platform: "darwin",
+    now: () => now,
     exec() {
       lookups += 1;
       throw new Error("scutil timed out");
@@ -470,7 +484,9 @@ test("provenance: computer name lookup failure still classifies", async () => {
     endpoint_id: "2b64e603-f82a-4aec-9524-9736472dc80a",
   }));
   await hooks["chat.message"]({ sessionID: "ses_1", messageID: "msg_1" }, userMessageOutput("hello"));
+  await t.flushDeviceNameRefreshForTests();
   await hooks["chat.message"]({ sessionID: "ses_1", messageID: "msg_2" }, userMessageOutput("again"));
+  await t.flushDeviceNameRefreshForTests();
   assert.equal(globalThis.__silmarilFirewallCalls.length, 2);
   assert.equal(lookups, 1);
   for (const call of globalThis.__silmarilFirewallCalls) {
@@ -480,6 +496,10 @@ test("provenance: computer name lookup failure still classifies", async () => {
       harness: "opencode",
     });
   }
+  now += 5 * 1000;
+  t.withProvenance({});
+  await t.flushDeviceNameRefreshForTests();
+  assert.equal(lookups, 2);
 });
 
 test("stableStringify sorts objects and handles circular values", () => {
