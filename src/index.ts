@@ -373,11 +373,13 @@ export function buildMetadata(
   hookEventName: string,
   fields: Record<string, unknown>,
 ): Record<string, unknown> {
+  const modelId = readString(fields.modelID);
   return omitUndefined({
-    silmaril: {
+    silmaril: omitUndefined({
       integration: PLUGIN_ID,
       version: PLUGIN_VERSION,
-    },
+      agent_model_id: modelId,
+    }),
     opencodeHookEvent: hookEventName,
     conversationId: readString(fields.sessionID),
     sessionId: readString(fields.sessionID),
@@ -387,7 +389,7 @@ export function buildMetadata(
     callId: readString(fields.callId),
     agent: readString(fields.agent),
     modelProviderId: readString(fields.modelProviderID),
-    modelId: readString(fields.modelID),
+    modelId,
     variant: readString(fields.variant),
     toolName: readString(fields.toolName),
     traceIndex: readFiniteNumber(fields.traceIndex),
