@@ -625,15 +625,32 @@ test("provenance: computer name lookup settles when the child ignores SIGTERM", 
   };
   process.on("unhandledRejection", onUnhandled);
   let now = 50_000;
-  const script = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);";
+  const script = "process.on('SIGTERM', () => {}); process.stdout.write('READY\\n'); setInterval(() => {}, 1000);";
+  let readyChild;
   try {
+    // Start the first child before the lookup deadline begins. Otherwise a slow
+    // CI runner can deliver SIGTERM before Node installs the test signal handler.
+    readyChild = spawn(process.execPath, ["-e", script], {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("test child did not become ready")), 5000);
+      readyChild.once("error", reject);
+      readyChild.stdout.once("data", (chunk) => {
+        clearTimeout(timeout);
+        assert.equal(String(chunk).trim(), "READY");
+        resolve();
+      });
+    });
     t.installDeviceNameLookupForTests({
       platform: "darwin",
       now: () => now,
       spawn(command, args, options) {
         assert.equal(command, "/usr/sbin/scutil");
         assert.deepEqual([...args], ["--get", "ComputerName"]);
-        const child = spawn(process.execPath, ["-e", script], options);
+        const child = readyChild ?? spawn(process.execPath, ["-e", script], options);
+        readyChild = undefined;
         const signals = [];
         const kill = child.kill.bind(child);
         child.kill = (signal) => {
@@ -705,6 +722,7 @@ test("provenance: computer name lookup settles when the child ignores SIGTERM", 
     assert.equal(process._getActiveHandles().includes(children[1].child), false);
     assert.deepEqual(unhandled, []);
   } finally {
+    readyChild?.kill("SIGKILL");
     process.off("unhandledRejection", onUnhandled);
     for (const entry of children) {
       try {
