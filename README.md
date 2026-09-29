@@ -71,7 +71,7 @@ Runtime configuration is resolved in this order:
 
 If either API key or API URL is missing, the plugin exits hooks without output. `timeout_ms` defaults to `2500` and accepts values from `250` through `10000`. Omit `mode` to use the backend, or set `shadow`, `warn`, or `block`; explicit mode wins over legacy `block_malicious`. Classifier failures, SDK import failures, malformed payloads, empty extracted text, and timeouts fail open without adding context.
 
-Every classifier request carries plugin-owned `metadata.silmaril.provenance`. If the app-provided canonical UUID v4 is absent, the plugin continues with harness-only provenance.
+Every classifier request carries plugin-owned `metadata.silmaril.provenance`. If the app-provided canonical UUID v4 is absent, the plugin continues with harness-only provenance. When the current hook reports a nonempty `model.modelID`, that request includes `metadata.silmaril.agent_model_id` as the same string already sent in `modelId`. `modelProviderId` stays a separate field. A missing or blank model ID omits `agent_model_id`; later events do not reuse an earlier selection.
 
 Set `debug=true` or `SILMARIL_DEBUG=true` to write compact diagnostic summaries through `client.app.log()`. Debug logs omit raw prompts, tool inputs, tool outputs, and assistant text.
 

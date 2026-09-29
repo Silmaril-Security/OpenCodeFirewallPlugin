@@ -807,6 +807,9 @@ test("chat.message: benign prompt classifies and stays silent", async () => {
   assert.equal(globalThis.__silmarilFirewallCalls[0].options.metadata.opencodeHookEvent, "chat.message");
   assert.equal(globalThis.__silmarilFirewallCalls[0].options.metadata.conversationId, "ses_1");
   assert.equal(globalThis.__silmarilFirewallCalls[0].options.metadata.sessionId, "ses_1");
+  assert.equal(globalThis.__silmarilFirewallCalls[0].options.metadata.modelProviderId, "anthropic");
+  assert.equal(globalThis.__silmarilFirewallCalls[0].options.metadata.modelId, "claude");
+  assert.equal(globalThis.__silmarilFirewallCalls[0].options.metadata.silmaril.agent_model_id, "claude");
   assert.deepEqual(globalThis.__silmarilFirewallCalls[0].options.metadata.silmaril.provenance, {
     schema_version: 1,
     harness: "opencode",
@@ -814,6 +817,115 @@ test("chat.message: benign prompt classifies and stays silent", async () => {
   assert.match(globalThis.__silmarilFirewallCalls[0].options.requestId, /^opencode-firewall-plugin-[a-f0-9]{64}$/);
   assert.equal(output.parts.length, 1);
   assert.equal(logs.some((entry) => entry.body.message === "classification_result"), true);
+});
+
+test("agent_model_id uses the current host model id and does not stick", async () => {
+  const pluginInput = {
+    project: { id: "proj_1", name: "Project" },
+    directory: "/tmp/project",
+    worktree: "/tmp/project",
+  };
+  const exactModelId = "accounts/fireworks/models/llama-v3p1-70b-instruct";
+  const withModel = t.buildMetadata(pluginInput, "chat.message", {
+    sessionID: "ses_1",
+    modelProviderID: "anthropic",
+    modelID: exactModelId,
+  });
+  assert.equal(withModel.modelProviderId, "anthropic");
+  assert.equal(withModel.modelId, exactModelId);
+  assert.equal(withModel.silmaril.agent_model_id, exactModelId);
+
+  const trimmed = t.buildMetadata(pluginInput, "chat.message", {
+    modelProviderID: " openai ",
+    modelID: "  gpt-5.4  ",
+  });
+  assert.equal(trimmed.modelProviderId, "openai");
+  assert.equal(trimmed.modelId, "gpt-5.4");
+  assert.equal(trimmed.silmaril.agent_model_id, "gpt-5.4");
+  assert.equal(withModel.silmaril.agent_model_id, exactModelId);
+
+  for (const modelID of [undefined, "", " \n\t ", { id: "structured" }]) {
+    const metadata = t.buildMetadata(pluginInput, "chat.message", {
+      modelProviderID: "anthropic",
+      modelID,
+    });
+    assert.equal(metadata.modelProviderId, "anthropic");
+    assert.equal(Object.hasOwn(metadata, "modelId"), false);
+    assert.equal(Object.hasOwn(metadata.silmaril, "agent_model_id"), false);
+  }
+
+  resetFirewallStub();
+  const hooks = await mod.SilmarilFirewallPlugin(mockInput(), pluginOptions());
+  const joined = userMessageOutput("joined");
+  joined.parts.push({
+    id: "prt_2",
+    sessionID: "ses_1",
+    messageID: "msg_1",
+    type: "text",
+    text: "second part",
+  });
+  await hooks["chat.message"]({ sessionID: "ses_1", messageID: "msg_1" }, joined);
+  await hooks["chat.message"]({
+    sessionID: "ses_1",
+    messageID: "msg_2",
+    model: { providerID: "anthropic", modelID: "claude-opus-4-7" },
+  }, userMessageOutput("first model"));
+  await hooks["tool.execute.before"](
+    { tool: "bash", sessionID: "ses_1", callID: "call_1" },
+    { args: { command: "pwd" } },
+  );
+  await hooks["tool.execute.after"](
+    { tool: "bash", sessionID: "ses_1", callID: "call_1", args: {} },
+    { title: "done", output: "workspace", metadata: {} },
+  );
+  await hooks["experimental.text.complete"](
+    { sessionID: "ses_1", messageID: "msg_3", partID: "prt_3" },
+    { text: "assistant text" },
+  );
+  await hooks["chat.message"]({
+    sessionID: "ses_1",
+    messageID: "msg_4",
+    model: { providerID: "openai", modelID: "gpt-5.4" },
+  }, userMessageOutput("switched model"));
+  await hooks["chat.message"]({
+    sessionID: "ses_1",
+    messageID: "msg_5",
+    model: { providerID: "anthropic", modelID: " \t " },
+  }, userMessageOutput("blank model"));
+  await hooks.event({
+    event: {
+      type: "session.created",
+      properties: {
+        info: {
+          id: "child_session",
+          parentID: "ses_1",
+          title: "delegated review",
+        },
+      },
+    },
+  });
+
+  const calls = globalThis.__silmarilFirewallCalls;
+  const agentModelId = (call) => call.options.metadata.silmaril.agent_model_id;
+  assert.equal(calls.length, 8);
+  assert.equal(calls[0].text, "joined\nsecond part");
+  assert.equal(Object.hasOwn(calls[0].options.metadata, "modelId"), false);
+  assert.equal(Object.hasOwn(calls[0].options.metadata.silmaril, "agent_model_id"), false);
+  assert.equal(calls[1].options.metadata.modelProviderId, "anthropic");
+  assert.equal(calls[1].options.metadata.modelId, "claude-opus-4-7");
+  assert.equal(agentModelId(calls[1]), "claude-opus-4-7");
+  assert.equal(Object.hasOwn(calls[2].options.metadata.silmaril, "agent_model_id"), false);
+  assert.equal(Object.hasOwn(calls[3].options.metadata.silmaril, "agent_model_id"), false);
+  assert.equal(Object.hasOwn(calls[4].options.metadata.silmaril, "agent_model_id"), false);
+  assert.equal(calls[5].options.metadata.modelProviderId, "openai");
+  assert.equal(calls[5].options.metadata.modelId, "gpt-5.4");
+  assert.equal(agentModelId(calls[5]), "gpt-5.4");
+  assert.equal(calls[6].options.metadata.modelProviderId, "anthropic");
+  assert.equal(Object.hasOwn(calls[6].options.metadata, "modelId"), false);
+  assert.equal(Object.hasOwn(calls[6].options.metadata.silmaril, "agent_model_id"), false);
+  assert.equal(calls[7].options.metadata.opencodeHookEvent, "subagent.start");
+  assert.equal(Object.hasOwn(calls[7].options.metadata.silmaril, "agent_model_id"), false);
+  assert.equal(agentModelId(calls[1]), "claude-opus-4-7");
 });
 
 test("chat.message: malicious result is silent in Shadow", async () => {
