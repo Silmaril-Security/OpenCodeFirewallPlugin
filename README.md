@@ -161,11 +161,11 @@ npm run build
 npm pack --dry-run
 ```
 
-The package pins `@silmaril-security/sdk` to `0.6.0` so backend-selected mode
-is preserved. It develops against `@opencode-ai/plugin@1.18.4`, with peer
+The package pins `@silmaril-security/sdk` to `0.6.0` for explicit local modes and
+compatible legacy response modes. It develops against `@opencode-ai/plugin@1.18.4`, with peer
 dependency `@opencode-ai/plugin` `>=1.0.0`. Unit tests stub the SDK for hook
-behavior and call the pinned SDK when checking that an omitted local mode
-preserves backend-selected Warn and Block. They also cover config loading,
+behavior and call the pinned SDK when checking explicit local modes and
+valid legacy response modes when local mode is omitted. They also cover config loading,
 opencode event mapping, shadow behavior, enforcement across supported
 boundaries, fail-open behavior, no raw payload leakage, demo launcher behavior,
 and dependency invariants.
@@ -175,3 +175,7 @@ and dependency invariants.
 - [Silmaril docs](https://www.silmaril.dev/docs)
 - [opencode plugin docs](https://opencode.ai/docs/plugins/)
 - [opencode config docs](https://opencode.ai/docs/config/)
+
+Current classify responses omit mode. Without an explicit or legacy local
+setting, this plugin falls back to Shadow. Set Warn or Block explicitly; the
+SDK pin does not establish backend-selected enforcement.
