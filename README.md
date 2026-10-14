@@ -164,7 +164,7 @@ npm pack --dry-run
 The package pins `@silmaril-security/sdk` to `0.6.0` for explicit local modes and
 compatible legacy response modes. It develops against `@opencode-ai/plugin@1.18.4`, with peer
 dependency `@opencode-ai/plugin` `>=1.0.0`. Unit tests stub the SDK for hook
-behavior and call the pinned SDK when checking explicit local modes and
+behavior and explicit local modes. Separate tests call the pinned SDK to check
 valid legacy response modes when local mode is omitted. They also cover config loading,
 opencode event mapping, shadow behavior, enforcement across supported
 boundaries, fail-open behavior, no raw payload leakage, demo launcher behavior,
