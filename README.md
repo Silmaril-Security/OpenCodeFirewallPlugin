@@ -110,7 +110,7 @@ SILMARIL_DEMO_BASE_URL="http://localhost:3001" node scripts/open-playground.mjs
 
 ## Event Mapping
 
-With no local `mode` and no legacy `block_malicious`, the classifier response mode selects the column below. If that response mode is missing or unrecognized, behavior matches Shadow. Warn and Block apply only when `prediction` is exactly `MALICIOUS`.
+With no local `mode` and no legacy `block_malicious`, the classifier response mode selects the column below. If that response mode is missing or unrecognized, behavior matches Shadow. Warn and Block apply when the model prediction is exactly `MALICIOUS` or `governance.action` is exactly `block`.
 
 | opencode hook | Classified text | Firewall hook | Shadow | Warn | Block |
 | --- | --- | --- | --- | --- | --- |
@@ -128,8 +128,11 @@ payload and never fetches session messages at `session.idle`.
 Every native event produces at most one classification, while the Firewall
 sequence cache owns conversation state from the incremental hook stream.
 
-Only `prediction === "MALICIOUS"` is enforceable. Scores, thresholds, outcomes,
-missing predictions, and unknown predictions remain diagnostic. Each OpenCode
+The policy candidate is `prediction === "MALICIOUS"` or
+`governance.action === "block"`. Unknown or malformed governance actions do not
+block. Governance-only denials retain the model's original `BENIGN` prediction
+in logs and local evidence. Scores, thresholds, outcomes, missing predictions,
+and unknown predictions remain diagnostic. Each OpenCode
 `sessionID` is sent as the exact conversation identity, so child sessions retain
 independent sequences. Stable message, part, and call identifiers produce
 content-sensitive request IDs for retry idempotency; events without one use the
@@ -161,8 +164,9 @@ npm run build
 npm pack --dry-run
 ```
 
-The package pins `@silmaril-security/sdk` to `0.6.0` for explicit local modes and
-compatible legacy response modes. It develops against `@opencode-ai/plugin@1.18.4`, with peer
+The package pins `@silmaril-security/sdk` to `0.7.6` so governance decisions
+survive response decoding while explicit local modes and compatible legacy
+response modes retain their existing precedence. It develops against `@opencode-ai/plugin@1.18.4`, with peer
 dependency `@opencode-ai/plugin` `>=1.0.0`. Unit tests stub the SDK for hook
 behavior and explicit local modes. Separate tests call the pinned SDK to check
 valid legacy response modes when local mode is omitted. They also cover config loading,
