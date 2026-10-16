@@ -18,7 +18,7 @@ import {
 } from "./local-evidence.js";
 
 const PLUGIN_ID = "opencode-firewall-plugin";
-const PLUGIN_VERSION = "0.4.4";
+const PLUGIN_VERSION = "0.4.5";
 const DEFAULT_CLASSIFY_TIMEOUT_MS = 2500;
 const MIN_CLASSIFY_TIMEOUT_MS = 250;
 const MAX_CLASSIFY_TIMEOUT_MS = 10000;
@@ -200,18 +200,26 @@ export const SilmarilFirewallPlugin: Plugin = async (input, options = {}) => {
       const malicious = shouldBlockClassification(result);
       const blocked = mode === "block" && malicious;
       const warned = mode === "warn" && malicious;
+      const warningDelivered = warned
+        ? appendWarningToUserMessage(output.parts)
+        : false;
       emitOpenCodeLocalEvidence(
         target,
         result,
         options,
         process.env,
-        blocked ? "block_returned" : warned ? "warning_context_returned" : "allowed",
+        blocked
+          ? "block_returned"
+          : warningDelivered
+            ? "warning_context_returned"
+            : "allowed",
+        true,
+        warned
+          ? warningDelivered ? "delivered" : "unsupported"
+          : undefined,
       );
       if (blocked) {
         throw new SilmarilFirewallBlockedError(formatBlockReason(result));
-      }
-      if (warned) {
-        appendWarningToUserMessage(output.parts);
       }
     },
 
@@ -486,7 +494,8 @@ export function buildLogSummary(target: HookTarget, result: ClassificationResult
 }
 
 export function shouldBlockClassification(result: ClassificationResult): boolean {
-  return result.prediction === "MALICIOUS";
+  return result.prediction === "MALICIOUS"
+    || readRecord(result.governance)?.action === "block";
 }
 
 /** @deprecated Use shouldBlockClassification. */
@@ -501,8 +510,12 @@ export function formatDecisionText(
   result: ClassificationResult,
   copy: { title: string; action: string },
 ): string {
+  const title = result.prediction !== "MALICIOUS"
+    && readRecord(result.governance)?.action === "block"
+    ? "Silmaril Firewall blocked content under governance policy."
+    : copy.title;
   return [
-    copy.title,
+    title,
     "",
     `Surface: ${describeSurface(target)}`,
     `Risk: ${describeRisk(result)}`,
@@ -539,8 +552,11 @@ function describeSurface(target: Pick<HookTarget, "hookEventName" | "toolName" |
 
 function describeRisk(result: ClassificationResult): string {
   const outcome = readString(result.primaryOutcome) ?? readString(result.primary_outcome);
+  const governanceBlocked = readRecord(result.governance)?.action === "block";
   if (!outcome) {
-    return "Unsafe content";
+    return governanceBlocked && result.prediction !== "MALICIOUS"
+      ? "Governance policy denial"
+      : "Unsafe content";
   }
   switch (outcome.trim().toLowerCase()) {
     case "information_disclosure":
@@ -555,7 +571,12 @@ function describeRisk(result: ClassificationResult): string {
     case "service_disruption":
       return "Service disruption risk";
     case "benign":
-      return shouldBlockClassification(result) ? "Unexpected classification conflict" : "No flagged risk";
+      if (governanceBlocked && result.prediction !== "MALICIOUS") {
+        return "Governance policy denial";
+      }
+      return result.prediction === "MALICIOUS"
+        ? "Unexpected classification conflict"
+        : "No flagged risk";
     default:
       return outcome
         .replace(/[_-]+/g, " ")
@@ -678,7 +699,10 @@ function emitOpenCodeLocalEvidence(
   warnDelivery?: LocalProtectionEventInput["warnDelivery"],
 ): void {
   const mode = effectiveMode(result, options, env);
-  const malicious = shouldBlockClassification(result);
+  const policyCandidate = shouldBlockClassification(result);
+  const resolvedNativeAction = policyCandidate && mode === "block" && !enforceable
+    ? "unavailable"
+    : nativeAction;
   emitLocalProtectionEventBestEffort({
     hook: localEvidenceHook(target.hookEventName),
     mode,
@@ -687,16 +711,16 @@ function emitOpenCodeLocalEvidence(
     sessionIdentity: readString(target.metadata.sessionId),
     toolName: target.toolName,
     classification: result,
-    policyDecision: malicious
+    policyDecision: policyCandidate
       ? mode === "block" && enforceable
         ? "block"
         : mode === "warn" && warnDelivery === "delivered"
           ? "warn"
           : "monitor"
       : "allow",
-    nativeAction,
-    ...(malicious && mode === "warn" ? { warnDelivery: warnDelivery ?? "unsupported" } : {}),
-    ...(malicious && mode === "block" && !enforceable ? { blockUnavailable: true } : {}),
+    nativeAction: resolvedNativeAction,
+    ...(policyCandidate && mode === "warn" ? { warnDelivery: warnDelivery ?? "unsupported" } : {}),
+    ...(policyCandidate && mode === "block" && !enforceable ? { blockUnavailable: true } : {}),
     pluginVersion: PLUGIN_VERSION,
   });
 }
