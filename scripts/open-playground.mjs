@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
-import { platform } from "node:os";
+import { openBrowser } from "./open-browser.mjs";
+export { openBrowser } from "./open-browser.mjs";
 
 const DEFAULT_DEMO_BASE_URL = "https://app.silmaril.dev";
 
@@ -55,27 +55,6 @@ export function buildDemoUrl(baseUrl = DEFAULT_DEMO_BASE_URL, route = "setup") {
   return `${parsed.origin}${path}`;
 }
 
-export function openBrowser(url) {
-  const command = platform() === "darwin"
-    ? "open"
-    : platform() === "win32"
-      ? "cmd"
-      : "xdg-open";
-  const args = platform() === "win32"
-    ? ["/c", "start", "", url]
-    : [url];
-  try {
-    const child = spawn(command, args, {
-      detached: true,
-      stdio: "ignore",
-    });
-    child.unref();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function printHelp() {
   process.stdout.write([
     "Usage: node scripts/open-playground.mjs [--open] [--json] [--route <setup|playground>]",
@@ -94,7 +73,7 @@ async function main() {
   }
 
   const url = buildDemoUrl(args.baseUrl, args.route);
-  const opened = args.open ? openBrowser(url) : false;
+  const opened = args.open ? await openBrowser(url) : false;
   const payload = { route: args.route, url, opened };
 
   if (args.json) {

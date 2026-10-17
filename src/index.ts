@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { platform } from "node:os";
+import { openBrowser } from "../scripts/open-browser.mjs";
+export { openBrowser } from "../scripts/open-browser.mjs";
 import type {
   Plugin,
   PluginInput,
@@ -168,7 +170,7 @@ export const SilmarilFirewallPlugin: Plugin = async (input, options = {}) => {
         async execute(args) {
           const route = args.route ?? "setup";
           const url = buildDemoUrl(args.base_url ?? process.env.SILMARIL_DEMO_BASE_URL, route);
-          const opened = args.open ? openBrowser(url) : false;
+          const opened = args.open ? await openBrowser(url) : false;
           return {
             title: "Silmaril Firewall demo",
             output: JSON.stringify({ route, url, opened }, null, 2),
@@ -611,27 +613,6 @@ export function buildDemoUrl(
   const parsed = new URL(normalizedBase);
   const path = route === "playground" ? "/demo/playground" : "/demo/setup-complete";
   return `${parsed.origin}${path}`;
-}
-
-export function openBrowser(url: string): boolean {
-  const command = platform() === "darwin"
-    ? "open"
-    : platform() === "win32"
-      ? "cmd"
-      : "xdg-open";
-  const args = platform() === "win32"
-    ? ["/c", "start", "", url]
-    : [url];
-  try {
-    const child = spawn(command, args, {
-      detached: true,
-      stdio: "ignore",
-    });
-    child.unref();
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function classifyTarget(

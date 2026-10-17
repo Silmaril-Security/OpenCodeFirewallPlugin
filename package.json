@@ -26,6 +26,8 @@
     "examples",
     "opencode",
     "scripts/install-opencode-assets.mjs",
+    "scripts/open-browser.mjs",
+    "scripts/open-browser.d.mts",
     "scripts/open-playground.mjs",
     "README.md"
   ],
