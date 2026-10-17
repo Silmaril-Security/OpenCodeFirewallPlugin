@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import {
   chmod,
@@ -17,6 +18,7 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { Firewall as RealFirewall } from "@silmaril-security/sdk";
+import { openBrowser } from "./open-browser.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = path.join(repoRoot, ".unit-test-build");
@@ -1685,6 +1687,100 @@ test("run hooks: missing config, empty payloads, and classifier errors fail open
   const errorOutput = userMessageOutput("hello");
   await hooks["chat.message"]({ sessionID: "ses_1", messageID: "msg_1" }, errorOutput);
   assert.equal(errorOutput.parts.length, 1);
+});
+
+test("browser opener waits for successful completion on each supported platform", async () => {
+  const url = "https://preview.example/demo/playground";
+  for (const [platformName, command, args] of [
+    ["darwin", "open", [url]],
+    ["linux", "xdg-open", [url]],
+    ["win32", "cmd", ["/c", "start", "", url]],
+  ]) {
+    const child = new EventEmitter();
+    let unreferenced = false;
+    child.unref = () => { unreferenced = true; };
+    let settled = false;
+    const pending = openBrowser(url, {
+      platformName,
+      spawnImpl(actualCommand, actualArgs, options) {
+        assert.equal(actualCommand, command);
+        assert.deepEqual(actualArgs, args);
+        assert.deepEqual(options, { detached: true, stdio: "ignore" });
+        return child;
+      },
+    }).then((opened) => { settled = true; return opened; });
+    child.emit("spawn");
+    await Promise.resolve();
+    assert.equal(settled, false);
+    assert.equal(unreferenced, true);
+    child.emit("close", 0, null);
+    assert.equal(await pending, true);
+  }
+});
+
+test("browser opener handles asynchronous errors, nonzero exits, signals, and synchronous failure", async () => {
+  for (const outcome of ["error", "nonzero", "signal", "throw"]) {
+    assert.equal(await openBrowser("https://preview.example", {
+      spawnImpl() {
+        if (outcome === "throw") throw new Error("spawn failed synchronously");
+        const child = new EventEmitter();
+        child.unref = () => {};
+        queueMicrotask(() => {
+          if (outcome === "error") {
+            child.emit("error", Object.assign(new Error("missing opener"), { code: "ENOENT" }));
+            child.emit("close", -2, null);
+          } else {
+            child.emit("close", outcome === "nonzero" ? 1 : null, "SIGTERM");
+          }
+        });
+        return child;
+      },
+    }), false);
+  }
+});
+
+test("browser opener has a bounded wait and absorbs a late error", async () => {
+  const child = new EventEmitter();
+  child.unref = () => {};
+  assert.equal(await openBrowser("https://preview.example", {
+    spawnImpl: () => child,
+    timeoutMs: 5,
+  }), false);
+  child.emit("error", new Error("late opener failure"));
+  child.emit("close", 0, null);
+});
+
+test("missing native opener returns false through the tool and standalone CLI without crashing", async () => {
+  // Windows can locate cmd through system paths independently of PATH.
+  // Its command and failure behavior are covered by the injected child tests.
+  if (process.platform === "win32") return;
+  const emptyPath = path.join(outDir, "no-browser-opener");
+  await mkdir(emptyPath);
+  const savedPath = process.env.PATH;
+  try {
+    process.env.PATH = emptyPath;
+    const hooks = await mod.SilmarilFirewallPlugin(mockInput(), pluginOptions());
+    const result = await hooks.tool.silmaril_demo.execute({ open: true }, {});
+    assert.equal(JSON.parse(result.output).opened, false);
+    assert.equal(result.metadata.opened, false);
+  } finally {
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+  }
+  const child = spawn(process.execPath, [
+    path.join(repoRoot, "scripts/open-playground.mjs"), "--open", "--json",
+  ], { env: { ...process.env, PATH: emptyPath }, timeout: 2000 });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const code = await new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
+  assert.equal(code, 0, stderr);
+  assert.equal(stderr, "");
+  assert.equal(JSON.parse(stdout).opened, false);
 });
 
 test("demo launcher, tool, and OpenCode assets build public URLs without credentials", async () => {
