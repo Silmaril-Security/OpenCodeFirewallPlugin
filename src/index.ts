@@ -69,8 +69,15 @@ type FirewallConstructor = new (options: {
 type ClassifyOptions = {
   hook?: string;
   toolName?: string;
+  governance?: GovernanceContext;
   metadata?: Record<string, unknown>;
   requestId?: string;
+};
+type GovernanceContext = {
+  resource?: {
+    kind: "tool";
+    id: string;
+  };
 };
 type FirewallSdk = {
   Firewall: FirewallConstructor;
@@ -82,6 +89,7 @@ type HookTarget = {
   metadata: Record<string, unknown>;
   toolName?: string;
   callId?: string;
+  governance?: GovernanceContext;
 };
 type CompactContext = {
   silmarilFirewall: Record<string, unknown>;
@@ -232,6 +240,9 @@ export const SilmarilFirewallPlugin: Plugin = async (input, options = {}) => {
         text: stableStringify(output.args),
         toolName: hookInput.tool,
         callId: hookInput.callID,
+        governance: {
+          resource: { kind: "tool", id: hookInput.tool },
+        },
         metadata: buildMetadata(input, "tool.execute.before", {
           sessionID: hookInput.sessionID,
           callId: hookInput.callID,
@@ -264,6 +275,9 @@ export const SilmarilFirewallPlugin: Plugin = async (input, options = {}) => {
         text: output.output,
         toolName: hookInput.tool,
         callId: hookInput.callID,
+        governance: {
+          resource: { kind: "tool", id: hookInput.tool },
+        },
         metadata: buildMetadata(input, "tool.execute.after", {
           sessionID: hookInput.sessionID,
           callId: hookInput.callID,
@@ -643,6 +657,7 @@ async function classifyTarget(
     const result = await firewall.classify(target.text, {
       hook: target.hook,
       toolName: target.toolName,
+      governance: target.governance,
       metadata: withProvenance(target.metadata, config.endpointId),
       requestId: buildLogicalRequestId(target),
     });

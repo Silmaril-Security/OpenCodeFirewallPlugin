@@ -1,8 +1,11 @@
 # OpenCode Firewall Plugin
 
-Silmaril Firewall native visibility hooks for opencode.
+Silmaril Firewall native visibility hooks for OpenCode 1.19.5 and 2.2.6.
 
-This plugin classifies opencode lifecycle events with Silmaril Firewall. Shadow is silent, Warn preserves content and appends one bounded warning on `chat.message` and `tool.execute.after`, and Block throws at pre-execution boundaries or replaces malicious output at mutable post-execution boundaries. Child `session.created` is observe-only in every mode.
+This plugin classifies OpenCode lifecycle events with Silmaril Firewall. The
+package exposes one lazy `./server` entry: OpenCode 1 uses its `id/server`
+definition, while OpenCode 2 uses its `id/setup` Promise API definition.
+Loading either generation does not eagerly load the other generation's API.
 
 Silmaril is an AI application firewall that protects agent execution. It evaluates intent, application context, tool calls, and accumulated execution state together before harmful outcomes materialize.
 
@@ -26,7 +29,7 @@ Then add the plugin to `opencode.json`:
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
     [
-      "file:///absolute/path/to/OpenCodeFirewallPlugin/dist/index.js",
+      "file:///absolute/path/to/OpenCodeFirewallPlugin/dist/server.js",
       {
         "silmaril_api_url": "https://...",
         "silmaril_api_key": "...",
@@ -39,6 +42,11 @@ Then add the plugin to `opencode.json`:
   ]
 }
 ```
+
+For a built local plugin, set the file URL to `dist/server.js` (the
+`dist/index.js` root remains the OpenCode 1 async plugin API for existing
+programmatic consumers). Installed packages are discovered through their
+`./server` export automatically.
 
 Install the OpenCode-visible skill and slash command into your global OpenCode config:
 
@@ -112,19 +120,25 @@ SILMARIL_DEMO_BASE_URL="http://localhost:3001" node scripts/open-playground.mjs
 
 With no local `mode` and no legacy `block_malicious`, the classifier response mode selects the column below. If that response mode is missing or unrecognized, behavior matches Shadow. Warn and Block apply when the model prediction is exactly `MALICIOUS` or `governance.action` is exactly `block`.
 
-| opencode hook | Classified text | Firewall hook | Shadow | Warn | Block |
+| OpenCode generation and hook | Classified text | Firewall hook | Shadow | Warn | Block |
 | --- | --- | --- | --- | --- | --- |
-| `chat.message` | concatenated user text parts | `user_input` | silent | append one bounded warning | throw before the turn continues |
-| `tool.execute.before` | stable-serialized tool args | `tool_call` | silent | unchanged | throw before the tool runs |
-| `tool.execute.after` | tool output string | `tool_response` | exact pass-through | append one bounded warning | replace output before model reuse |
-| `experimental.text.complete` | assistant text | `llm_output` | exact pass-through | unchanged | replace output before delivery |
-| `session.created` for a child with a title | child-session title | `user_input` | observe-only | observe-only | observe-only |
+| 1.19.5 `chat.message` | concatenated user text parts | `user_input` | silent | append one bounded warning | reject before the turn continues |
+| 2.2.6 `session.prompt` | native prompt text | `user_input` | silent | append one bounded warning | replace text, files, agents, and skills with an inert notice |
+| 1.19.5/2.2.6 tool before | stable-serialized native input | `tool_call` | silent | unchanged | reject before execution; OpenCode 2 converts the fixed rejection to native `Tool.Error` |
+| 1.19.5 tool after | output string | `tool_response` | exact pass-through | append one bounded warning | replace output before model reuse |
+| 2.2.6 tool after (completed only) | content and structured output | `tool_response` | exact pass-through | append one bounded content warning | replace both content and structured output before model reuse |
+| 1.19.5 `experimental.text.complete` | assistant text | `llm_output` | exact pass-through | unchanged | replace output before delivery |
+| child `session.created` with a title | child-session title | `user_input` | observe-only | observe-only | observe-only |
 
-opencode does not expose direct `Stop` or `SubagentStop` parity hooks. Assistant
-output classification is implemented through `experimental.text.complete`.
-Child sessions use the same normal hook surface under their own `sessionID`.
-The plugin observes `session.created` only for the current child lifecycle
-payload and never fetches session messages at `session.idle`.
+OpenCode 2.2.6 has no Promise API equivalent of
+`experimental.text.complete`, so v2 final assistant output is not classified or
+blocked. The OpenCode 1 final-output path remains supported; this is an
+explicit capability gap, not parity.
+
+Child sessions use normal prompt and tool hooks under their own `sessionID`.
+OpenCode 2 records `session.created` parent correlation even when its optional
+title is absent, and closes the event iterator when the plugin unloads. Neither
+adapter reconstructs child history at idle.
 Every native event produces at most one classification, while the Firewall
 sequence cache owns conversation state from the incremental hook stream.
 
@@ -137,6 +151,13 @@ and unknown predictions remain diagnostic. Each OpenCode
 independent sequences. Stable message, part, and call identifiers produce
 content-sensitive request IDs for retry idempotency; events without one use the
 SDK-generated ID.
+
+Tool requests use SDK 0.8.2 typed governance resources. OpenCode 2 maps the
+native effective tool ID to `{ kind: "tool", id }`. Its public Promise context
+does not expose independent MCP registry authority, and tool namespaces are
+generic and normalized, so the plugin never invents an `mcp_tool` parent from
+a namespace. OpenCode agent names remain metadata attribution only and are not
+sent as an authenticated governance principal.
 
 ## Local Evidence
 
@@ -164,15 +185,24 @@ npm run build
 npm pack --dry-run
 ```
 
-The package pins `@silmaril-security/sdk` to `0.7.6` so governance decisions
-survive response decoding while explicit local modes and compatible legacy
-response modes retain their existing precedence. It develops against `@opencode-ai/plugin@1.18.4`, with peer
-dependency `@opencode-ai/plugin` `>=1.0.0`. Unit tests stub the SDK for hook
-behavior and explicit local modes. Separate tests call the pinned SDK to check
-valid legacy response modes when local mode is omitted. They also cover config loading,
-opencode event mapping, shadow behavior, enforcement across supported
-boundaries, fail-open behavior, no raw payload leakage, demo launcher behavior,
-and dependency invariants.
+The package pins `@silmaril-security/sdk` to `0.8.2`, develops against
+`opencode-ai` and `@opencode-ai/plugin` 1.19.5, and qualifies the actual
+`@opencode/cli`, `@opencode/plugin`, `@opencode/core`, and `@opencode/util`
+2.2.6 packages. `effect` is a peer dependency and a development dependency.
+As required by OpenCode's plugin packaging contract, bundlers must keep
+`effect`, `effect/*`, and `@opencode/plugin` entry points external so the
+plugin receives the host runtime instance.
+
+Tests call the real SDK against a local fetch capture, pack and load this
+package through OpenCode 2.2.6's published `Host.resolve`/`Host.load`, run the
+official Promise adapter, and execute a local counter tool through the real
+OpenCode 2 tool service. For OpenCode 1.19.5, the test fetches five official
+source files and the MIT license at pinned revision
+`810c0eba1a7348036f8bdf61e6632d0c36c6876c`, verifies their SHA-256 hashes,
+AST-extracts the original entrypoint, validator, and consumer functions
+unchanged, erases only TypeScript syntax, and runs them against the current
+packed artifact. This proves the retained loader function contract, not a full
+1.19.5 CLI turn or dispatcher. Tests use no model or paid inference.
 
 ## References
 

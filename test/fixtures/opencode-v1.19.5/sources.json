@@ -1,0 +1,37 @@
+{
+  "upstream": "anomalyco/opencode",
+  "tag": "v1.19.5",
+  "revision": "810c0eba1a7348036f8bdf61e6632d0c36c6876c",
+  "license": {
+    "path": "LICENSE",
+    "url": "https://raw.githubusercontent.com/anomalyco/opencode/810c0eba1a7348036f8bdf61e6632d0c36c6876c/LICENSE",
+    "sha256": "625f0f619133f89bbbb2abe37369613dfa1885eba1e50d02170deb62bb42cb6b"
+  },
+  "files": [
+    {
+      "path": "packages/opencode/src/plugin/shared.ts",
+      "url": "https://raw.githubusercontent.com/anomalyco/opencode/810c0eba1a7348036f8bdf61e6632d0c36c6876c/packages/opencode/src/plugin/shared.ts",
+      "sha256": "1ada9e15915e47bbb7b16436f0018c9b86845a66e687d89d037be896b9663140"
+    },
+    {
+      "path": "packages/opencode/src/plugin/index.ts",
+      "url": "https://raw.githubusercontent.com/anomalyco/opencode/810c0eba1a7348036f8bdf61e6632d0c36c6876c/packages/opencode/src/plugin/index.ts",
+      "sha256": "47c62b7cfae891d268e6b239edb0f1c46df5cb35eb11ccfd8bd4186c156024e9"
+    },
+    {
+      "path": "packages/opencode/src/util/filesystem.ts",
+      "url": "https://raw.githubusercontent.com/anomalyco/opencode/810c0eba1a7348036f8bdf61e6632d0c36c6876c/packages/opencode/src/util/filesystem.ts",
+      "sha256": "ec2aab5b5b5bedcc5d1c68a16f476193d3ce08d2e203b5e57b4a5f3106f1090f"
+    },
+    {
+      "path": "packages/core/src/fs-util.ts",
+      "url": "https://raw.githubusercontent.com/anomalyco/opencode/810c0eba1a7348036f8bdf61e6632d0c36c6876c/packages/core/src/fs-util.ts",
+      "sha256": "8deaf7c7b809425da81315019b79d9044592eead53a066e6263886a9c11bf860"
+    },
+    {
+      "path": "packages/tui/src/util/record.ts",
+      "url": "https://raw.githubusercontent.com/anomalyco/opencode/810c0eba1a7348036f8bdf61e6632d0c36c6876c/packages/tui/src/util/record.ts",
+      "sha256": "68d6c4f392f9b69b883ae0d25a09a5048ea552ff4a57d024fbb269e843c1ed7b"
+    }
+  ]
+}

@@ -13,8 +13,8 @@
       "import": "./dist/index.js"
     },
     "./server": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
     },
     "./tui": {
       "types": "./dist/tui.d.ts",
@@ -35,20 +35,42 @@
     "build": "tsc -p tsconfig.json",
     "install:opencode-assets": "node scripts/install-opencode-assets.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node scripts/run-unit-tests.mjs",
+    "test": "npm run build && npm run test:unit && npm run test:hosts",
+    "test:unit": "node scripts/run-unit-tests.mjs",
+    "test:hosts": "bun scripts/run-v1-contract-qualification.mjs && bun scripts/run-host-qualification.mjs",
     "pack:dry": "npm pack --dry-run",
     "prepublishOnly": "node scripts/block-publish.mjs"
   },
   "dependencies": {
-    "@silmaril-security/sdk": "0.7.6"
+    "@silmaril-security/sdk": "0.8.2"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": ">=1.0.0"
+    "@opencode-ai/plugin": ">=1.0.0",
+    "@opencode/plugin": "2.2.6",
+    "effect": "^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@opencode-ai/plugin": {
+      "optional": true
+    },
+    "@opencode/plugin": {
+      "optional": true
+    },
+    "effect": {
+      "optional": true
+    }
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "1.18.4",
+    "@opencode-ai/plugin": "1.19.5",
+    "@opencode/cli": "2.2.6",
+    "@opencode/core": "2.2.6",
+    "@opencode/plugin": "2.2.6",
+    "@opencode/util": "2.2.6",
     "@types/node": "^24.0.0",
+    "bun": "1.4.4",
+    "effect": "4.1.0",
     "esbuild": "^0.28.1",
+    "opencode-ai": "1.19.5",
     "typescript": "^5.9.3"
   },
   "engines": {

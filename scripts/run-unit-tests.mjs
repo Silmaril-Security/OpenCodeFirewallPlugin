@@ -23,6 +23,7 @@ import { openBrowser } from "./open-browser.mjs";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = path.join(repoRoot, ".unit-test-build");
 const outFile = path.join(outDir, "index-under-test.mjs");
+const v2OutFile = path.join(outDir, "v2-under-test.mjs");
 
 await rm(outDir, { recursive: true, force: true });
 await mkdir(outDir, { recursive: true });
@@ -91,7 +92,48 @@ await build({
   ],
 });
 
+await build({
+  entryPoints: [path.join(repoRoot, "src", "v2.ts")],
+  outfile: v2OutFile,
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  target: "node22",
+  plugins: [
+    {
+      name: "unit-test-silmaril-sdk",
+      setup(buildApi) {
+        buildApi.onResolve({ filter: /^@silmaril-security\/sdk$/ }, (args) => ({
+          path: args.path,
+          namespace: "unit-test-silmaril-sdk",
+        }));
+        buildApi.onLoad({ filter: /.*/, namespace: "unit-test-silmaril-sdk" }, () => ({
+          loader: "js",
+          contents: `
+            export class Firewall {
+              constructor(options) {
+                this.options = options;
+                globalThis.__silmarilFirewallInstances ??= [];
+                globalThis.__silmarilFirewallInstances.push({ options, instance: this });
+              }
+              async classify(text, options) {
+                globalThis.__silmarilFirewallCalls ??= [];
+                globalThis.__silmarilFirewallCalls.push({ text, options });
+                const handler = globalThis.__silmarilFirewallClassify;
+                return handler
+                  ? await handler(text, options)
+                  : { prediction: "BENIGN", score: 0.01, threshold: 0.5, mode: this.options.mode ?? "shadow" };
+              }
+            }
+          `,
+        }));
+      },
+    },
+  ],
+});
+
 const mod = await import(`${pathToFileURL(outFile).href}?${Date.now()}`);
+const v2mod = await import(`${pathToFileURL(v2OutFile).href}?${Date.now()}`);
 const t = mod.__testInternals;
 const tests = [];
 
@@ -189,6 +231,89 @@ function mockInput(logs = [], sessions = {}) {
   };
 }
 
+function asyncEventStream() {
+  const values = [];
+  const waiters = [];
+  let closed = false;
+  let returnCalls = 0;
+  const iterator = {
+    next() {
+      if (values.length) return Promise.resolve({ done: false, value: values.shift() });
+      if (closed) return Promise.resolve({ done: true, value: undefined });
+      return new Promise((resolve) => waiters.push(resolve));
+    },
+    return() {
+      returnCalls += 1;
+      closed = true;
+      while (waiters.length) {
+        waiters.shift()({ done: true, value: undefined });
+      }
+      return Promise.resolve({ done: true, value: undefined });
+    },
+  };
+  return {
+    iterable: {
+      [Symbol.asyncIterator]() {
+        return iterator;
+      },
+    },
+    emit(value) {
+      const waiter = waiters.shift();
+      if (waiter) waiter({ done: false, value });
+      else values.push(value);
+    },
+    get returnCalls() {
+      return returnCalls;
+    },
+  };
+}
+
+function mockV2Context(options = pluginOptions(), toolList = []) {
+  const hooks = { session: {}, tool: {} };
+  const disposed = [];
+  const stream = asyncEventStream();
+  const register = (domain, name, callback) => {
+    hooks[domain][name] = callback;
+    return Promise.resolve({
+      async dispose() {
+        disposed.push(`${domain}.${name}`);
+      },
+    });
+  };
+  return {
+    context: {
+      app: { name: "OpenCode", version: "2.2.6", channel: "stable" },
+      location: {
+        directory: "/tmp/project",
+        project: {
+          id: "project-v2",
+          directory: "/tmp/project",
+          canonical: "/tmp/project",
+        },
+      },
+      options,
+      session: {
+        hook: (name, callback) => register("session", name, callback),
+      },
+      tool: {
+        hook: (name, callback) => register("tool", name, callback),
+        async list() {
+          return toolList;
+        },
+      },
+      event: {
+        subscribe(subscription) {
+          assert.deepEqual(subscription.types, ["session.created"]);
+          return stream.iterable;
+        },
+      },
+    },
+    hooks,
+    disposed,
+    stream,
+  };
+}
+
 function userMessageOutput(text = "hello") {
   return {
     message: {
@@ -266,7 +391,7 @@ test("effective mode keeps an explicit non-blocking override authoritative", () 
   assert.equal(t.effectiveMode({ prediction: "MALICIOUS" }, pluginOptions(), {}), "shadow");
 });
 
-test("SDK 0.7.6 preserves backend-selected Warn and Block modes when local mode is omitted", async () => {
+test("SDK 0.8.2 preserves backend-selected Warn and Block modes when local mode is omitted", async () => {
   const originalFetch = globalThis.fetch;
   const requestBodies = [];
   let backendMode = "warn";
@@ -332,6 +457,63 @@ test("actual pinned SDK preserves a governance-only block response", async () =>
       policyVersion: "synthetic-policy",
     });
     assert.equal(t.shouldBlockClassification(result), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("actual SDK 0.8.2 maps canonical parentId and keeps agent identity attribution-only", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestBody;
+  globalThis.fetch = async (_input, init) => {
+    requestBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({
+      prediction: "BENIGN",
+      score: 0.01,
+      threshold: 0.5,
+      governance: {
+        action: "allow",
+        policy_version: "fixture",
+      },
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    const firewall = new RealFirewall({
+      apiKey: "test-key",
+      apiUrl: "https://alpha.example/classify",
+      timeoutMs: 1_000,
+    });
+    await firewall.classify("create an issue", {
+      hook: "tool_call",
+      toolName: "github_create_issue",
+      governance: {
+        resource: {
+          kind: "mcp_tool",
+          id: "create_issue",
+          parentId: "github",
+        },
+      },
+      metadata: {
+        agent: "build",
+        conversationId: "session-v2",
+      },
+    });
+    assert.deepEqual(requestBody.resource, {
+      kind: "mcp_tool",
+      id: "create_issue",
+      parent_id: "github",
+    });
+    assert.equal(Object.hasOwn(requestBody, "agent"), false);
+    assert.equal(requestBody.metadata.agent, "build");
+    assert.deepEqual(requestBody.metadata.silmaril.governance.resource, {
+      kind: "mcp_tool",
+      id: "create_issue",
+      parent_id: "github",
+    });
+    assert.equal(Object.hasOwn(requestBody.metadata.silmaril.governance, "agent"), false);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1689,6 +1871,209 @@ test("run hooks: missing config, empty payloads, and classifier errors fail open
   assert.equal(errorOutput.parts.length, 1);
 });
 
+test("OpenCode 2 prompt hook replaces every associated prompt field without throwing", async () => {
+  resetFirewallStub();
+  globalThis.__silmarilFirewallClassify = async () => ({
+    prediction: "MALICIOUS",
+    primaryOutcome: "control_abuse",
+  });
+  const host = mockV2Context(pluginOptions({ mode: "block" }));
+  const cleanup = await v2mod.setup(host.context);
+  try {
+    const event = {
+      sessionID: "session-v2",
+      messageID: "message-v2",
+      delivery: "queue",
+      metadata: { caller: "kept" },
+      prompt: {
+        text: "MALICIOUS_PROMPT_SENTINEL",
+        files: [{ uri: "file:///private.txt" }],
+        agents: [{ name: "unsafe-agent" }],
+        skills: [{ id: "unsafe-skill" }],
+      },
+    };
+    await host.hooks.session.prompt(event);
+    assert.equal(event.prompt.text, v2mod.__testInternals.SAFE_PROMPT_NOTICE);
+    assert.deepEqual(event.prompt.files, []);
+    assert.deepEqual(event.prompt.agents, []);
+    assert.deepEqual(event.prompt.skills, []);
+    assert.equal(Object.hasOwn(event, "cancel"), false);
+    assert.equal(Object.hasOwn(event, "block"), false);
+    assert.equal(globalThis.__silmarilFirewallCalls[0].options.metadata.delivery, "queue");
+  } finally {
+    await cleanup();
+  }
+  assert.deepEqual(host.disposed.sort(), [
+    "session.prompt",
+    "tool.execute.after",
+    "tool.execute.before",
+  ]);
+  assert.ok(host.stream.returnCalls >= 1);
+});
+
+test("OpenCode 2 tool hooks keep generic namespaces as plain tools and remove all blocked output", async () => {
+  resetFirewallStub();
+  globalThis.__silmarilFirewallClassify = async () => ({
+    prediction: "BENIGN",
+    governance: { action: "block", policyVersion: "fixture" },
+  });
+  const toolList = [{
+    id: "github_create_issue",
+    name: "create_issue",
+    description: "fixture",
+    input: {},
+    options: { namespace: "github" },
+    async execute() {},
+  }];
+  const host = mockV2Context(pluginOptions({ mode: "block" }), toolList);
+  const cleanup = await v2mod.setup(host.context);
+  try {
+    await assert.rejects(
+      host.hooks.tool["execute.before"]({
+        tool: "github_create_issue",
+        sessionID: "child-v2",
+        agent: "build",
+        messageID: "message-v2",
+        id: "call-v2-before",
+        input: { title: "MALICIOUS_INPUT_SENTINEL" },
+      }),
+      (error) => error instanceof Error
+        && error.message === v2mod.__testInternals.SAFE_TOOL_CALL_REASON,
+    );
+    assert.deepEqual(globalThis.__silmarilFirewallCalls[0].options.governance, {
+      resource: {
+        kind: "tool",
+        id: "github_create_issue",
+      },
+    });
+    assert.equal(globalThis.__silmarilFirewallCalls[0].options.metadata.agent, "build");
+
+    const completed = {
+      tool: "github_create_issue",
+      sessionID: "child-v2",
+      agent: "build",
+      messageID: "message-v2",
+      id: "call-v2-after",
+      input: { title: "fixture" },
+      status: "completed",
+      result: {
+        content: [{ type: "text", text: "MALICIOUS_CONTENT_SENTINEL" }],
+        output: { secret: "MALICIOUS_OUTPUT_SENTINEL" },
+        metadata: { secret: "MALICIOUS_METADATA_SENTINEL" },
+      },
+    };
+    await host.hooks.tool["execute.after"](completed);
+    assert.equal(completed.result.content, v2mod.__testInternals.SAFE_TOOL_RESULT_NOTICE);
+    assert.equal(completed.result.output, v2mod.__testInternals.SAFE_TOOL_RESULT_NOTICE);
+    assert.deepEqual(completed.result.metadata, { silmaril: { blocked: true } });
+    assert.doesNotMatch(JSON.stringify(completed.result), /MALICIOUS_/u);
+
+    const calls = globalThis.__silmarilFirewallCalls.length;
+    await host.hooks.tool["execute.after"]({
+      ...completed,
+      status: "error",
+      error: new Error("tool failed"),
+    });
+    assert.equal(globalThis.__silmarilFirewallCalls.length, calls);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("OpenCode 2 governance never invents MCP parents for built-in or custom namespaces", () => {
+  for (const id of [
+    "session_rename",
+    "session_move",
+    "worktree_create",
+    "worktree_remove",
+    "opencode_session_rename",
+    "opencode_session_move",
+    "opencode_worktree_create",
+    "opencode_worktree_remove",
+    "github_create_issue",
+    "custom_namespace_action",
+  ]) {
+    assert.deepEqual(v2mod.__testInternals.resolveToolResource(id), {
+      kind: "tool",
+      id,
+    });
+  }
+});
+
+test("OpenCode 2 child events correlate parent metadata even when title is absent", async () => {
+  resetFirewallStub();
+  const host = mockV2Context(pluginOptions({ mode: "shadow" }));
+  const cleanup = await v2mod.setup(host.context);
+  try {
+    host.stream.emit({
+      type: "session.created",
+      data: {
+        sessionID: "child-without-title",
+        parentID: "parent-v2",
+        slug: "child",
+        version: "2.2.6",
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(globalThis.__silmarilFirewallCalls.length, 0);
+    await host.hooks.session.prompt({
+      sessionID: "child-without-title",
+      messageID: "message-child",
+      delivery: "steer",
+      prompt: { text: "child prompt" },
+    });
+    assert.equal(
+      globalThis.__silmarilFirewallCalls[0].options.metadata.parentSessionId,
+      "parent-v2",
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("OpenCode 2 classifier failures fail open on every mutable boundary", async () => {
+  resetFirewallStub();
+  globalThis.__silmarilFirewallClassify = async () => {
+    throw new Error("classifier unavailable");
+  };
+  const host = mockV2Context(pluginOptions({ mode: "block" }));
+  const cleanup = await v2mod.setup(host.context);
+  try {
+    const prompt = {
+      sessionID: "session-v2",
+      messageID: "message-v2",
+      delivery: "queue",
+      prompt: { text: "original", files: [{ uri: "file:///safe" }] },
+    };
+    const originalPrompt = structuredClone(prompt);
+    await host.hooks.session.prompt(prompt);
+    assert.deepEqual(prompt, originalPrompt);
+    await host.hooks.tool["execute.before"]({
+      tool: "read",
+      sessionID: "session-v2",
+      agent: "build",
+      messageID: "message-v2",
+      id: "call-v2",
+      input: { path: "safe" },
+    });
+    const after = {
+      tool: "read",
+      sessionID: "session-v2",
+      agent: "build",
+      messageID: "message-v2",
+      id: "call-v2",
+      input: { path: "safe" },
+      status: "completed",
+      result: { content: "original", output: { safe: true } },
+    };
+    const originalAfter = structuredClone(after);
+    await host.hooks.tool["execute.after"](after);
+    assert.deepEqual(after, originalAfter);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("browser opener waits for successful completion on each supported platform", async () => {
   const url = "https://preview.example/demo/playground";
   for (const [platformName, command, args] of [
@@ -1812,11 +2197,18 @@ test("demo launcher, tool, and OpenCode assets build public URLs without credent
   assert.equal(command.includes("secret-key"), false);
 });
 
-test("source and dependency invariants: SDK 0.7.6 and package is unpublished until licensed", async () => {
+test("source and dependency invariants: exact host package pins, SDK 0.8.2, and blocked publication", async () => {
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
   assert.equal(packageJson.version, "0.4.6");
-  assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.7.6");
-  assert.equal(packageJson.devDependencies["@opencode-ai/plugin"], "1.18.4");
+  assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.8.2");
+  assert.equal(packageJson.devDependencies["@opencode-ai/plugin"], "1.19.5");
+  assert.equal(packageJson.devDependencies["opencode-ai"], "1.19.5");
+  for (const name of ["@opencode/cli", "@opencode/plugin", "@opencode/core", "@opencode/util"]) {
+    assert.equal(packageJson.devDependencies[name], "2.2.6");
+  }
+  assert.equal(packageJson.devDependencies.effect, "4.1.0");
+  assert.equal(packageJson.peerDependencies.effect, "^4.0.0");
+  assert.equal(packageJson.exports["./server"].import, "./dist/server.js");
   assert.equal(packageJson.private, true);
   assert.equal(packageJson.license, "UNLICENSED");
   assert.ok(packageJson.files.includes("opencode"));
