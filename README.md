@@ -13,6 +13,30 @@ Silmaril is an AI application firewall that protects agent execution. It evaluat
 
 This repository is intended to be public, but it is not OSI-licensed yet. Until a license is selected, the package is marked `UNLICENSED`, `private=true`, and npm publishing is blocked by `prepublishOnly`.
 
+## Release Status
+
+The source tree is prepared as version 0.4.7, but 0.4.7 is not yet tagged or
+published. The latest independently verified published release remains
+[`v0.4.6`](https://github.com/Silmaril-Security/OpenCodeFirewallPlugin/releases/tag/v0.4.6),
+whose tag resolves to commit
+`46919c7f9b4eaaba35e67c43c0b525f1c6d760df`.
+
+After 0.4.7 publication and independent verification, its intended immutable
+Git source ref is `refs/tags/v0.4.7`. Check out that exact ref rather than a
+floating branch:
+
+```sh
+git clone https://github.com/Silmaril-Security/OpenCodeFirewallPlugin.git
+cd OpenCodeFirewallPlugin
+git checkout --detach refs/tags/v0.4.7
+npm install
+npm run build
+```
+
+Do not use that future ref until it exists and has been verified. Git source
+archives do not include the generated `dist` distribution, so they likewise
+require `npm install` followed by `npm run build`.
+
 ## Install
 
 For local development, build this package and register the built plugin with opencode:

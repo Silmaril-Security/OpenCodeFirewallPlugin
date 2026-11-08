@@ -1739,7 +1739,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
     },
     policyDecision: "allow",
     nativeAction: "allowed",
-    pluginVersion: "0.4.6",
+    pluginVersion: "0.4.7",
   });
   const serialized = JSON.stringify(event);
   assert.equal(event.schemaVersion, 1);
@@ -1762,7 +1762,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
     },
     policyDecision: "block",
     nativeAction: "block_returned",
-    pluginVersion: "0.4.6",
+    pluginVersion: "0.4.7",
   });
   assert.equal(blocked.evidenceTruth, "native_response_returned");
   assert.equal(JSON.stringify(blocked).includes("RAW_OPEN_CODE_SECRET"), false);
@@ -1777,7 +1777,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
       classification: { prediction: "BENIGN" },
       policyDecision: "allow",
       nativeAction: "allowed",
-      pluginVersion: "0.4.6",
+      pluginVersion: "0.4.7",
     }, { directory: root });
     assert.deepEqual(await readdir(root), [path.basename(destination)]);
     assert.equal((await stat(root)).mode & 0o777, 0o750);
@@ -1859,7 +1859,7 @@ test("governance-only local evidence keeps BENIGN and marks observer blocking un
     assert.equal(event.policyDecision, "monitor");
     assert.equal(event.nativeAction, "unavailable");
     assert.equal(event.blockUnavailable, true);
-    assert.equal(event.provenance.pluginVersion, "0.4.6");
+    assert.equal(event.provenance.pluginVersion, "0.4.7");
   } finally {
     if (savedDirectory === undefined) {
       delete process.env.SILMARIL_LOCAL_EVENT_DIR;
@@ -2391,7 +2391,7 @@ test("demo launcher, tool, and OpenCode assets build public URLs without credent
 
 test("source and dependency invariants: exact host package pins, SDK 0.8.2, and blocked publication", async () => {
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.4.6");
+  assert.equal(packageJson.version, "0.4.7");
   assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.8.2");
   assert.equal(packageJson.devDependencies["@opencode-ai/plugin"], "1.19.5");
   assert.equal(packageJson.devDependencies["opencode-ai"], "1.19.5");

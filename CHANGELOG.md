@@ -1,5 +1,20 @@
 # Release notes
 
+## 0.4.7 (release preparation)
+
+This source prepares package and runtime provenance for version 0.4.7. It
+retains the SDK 0.8.2 pin, OpenCode 2.2.6 native Promise contracts, and the
+legacy OpenCode 1.19.5 adapter and pinned-loader qualification scope. OpenCode
+2 prompt blocking still replaces the prompt text, files, agents, and skills;
+the host still exposes no final-assistant-text Promise hook.
+
+The package remains a private, unlicensed Git/local-source distribution with
+npm publication blocked. Publication requires a separate authorized release
+and independent artifact verification. Until then, the latest verified
+published and tagged release is v0.4.6 at commit
+`46919c7f9b4eaaba35e67c43c0b525f1c6d760df`; no installed adoption, deployment,
+or broader host qualification is claimed for this preparation.
+
 ## 0.4.6 (unreleased)
 
 The package now exposes a lazy dual-generation `./server` entry. It retains
