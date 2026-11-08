@@ -15,27 +15,21 @@ This repository is intended to be public, but it is not OSI-licensed yet. Until 
 
 ## Release Status
 
-The source tree is prepared as version 0.4.7, but 0.4.7 is not yet tagged or
-published. The latest independently verified published release remains
-[`v0.4.6`](https://github.com/Silmaril-Security/OpenCodeFirewallPlugin/releases/tag/v0.4.6),
-whose tag resolves to commit
-`46919c7f9b4eaaba35e67c43c0b525f1c6d760df`.
-
-After 0.4.7 publication and independent verification, its intended immutable
-Git source ref is `refs/tags/v0.4.7`. Check out that exact ref rather than a
-floating branch:
+Version 0.4.7 is available as the [`v0.4.7` GitHub release](https://github.com/Silmaril-Security/OpenCodeFirewallPlugin/releases/tag/v0.4.7).
+Its immutable Git source ref is `refs/tags/v0.4.7`, resolving to commit
+`90fcd559d9bd02de218a47af9e7ac302044ce95f`. The package remains private and
+`UNLICENSED`, with npm publishing blocked. Check out the exact Git ref:
 
 ```sh
 git clone https://github.com/Silmaril-Security/OpenCodeFirewallPlugin.git
 cd OpenCodeFirewallPlugin
 git checkout --detach refs/tags/v0.4.7
-npm install
+npm ci
 npm run build
 ```
 
-Do not use that future ref until it exists and has been verified. Git source
-archives do not include the generated `dist` distribution, so they likewise
-require `npm install` followed by `npm run build`.
+Git source archives do not include the generated `dist` distribution, so they
+likewise require `npm ci` followed by `npm run build`.
 
 ## Install
 
