@@ -87,7 +87,7 @@ Classifier failures, SDK import failures, malformed payloads, empty extracted te
 
 Every classifier request carries plugin-owned `metadata.silmaril.provenance` with harness `opencode`. A missing or invalid `endpoint_id` is omitted from that object.
 
-Set `debug=true` or `SILMARIL_DEBUG=true` to write compact diagnostic summaries through `client.app.log()`. Debug logs omit raw prompts, tool inputs, tool outputs, and assistant text.
+Set `debug=true` or `SILMARIL_DEBUG=true` to write compact diagnostic summaries. OpenCode 1 uses `client.app.log()`. OpenCode 2.2.6 exposes only app name, version, and channel on its Promise context, so v2 writes bounded JSON diagnostics synchronously to stderr and does not call an invented host logging extension. Diagnostics identify missing configuration, SDK loading, client initialization, classification failures, and compact classification outcomes. They omit API keys, API URLs, exception messages, raw prompts, tool inputs, tool outputs, metadata payloads, and assistant text.
 
 The package also exposes a TUI entrypoint at `dist/tui.js` / `@silmaril/opencode-firewall-plugin/tui`. It registers `/silmaril-firewall`, which tells users that blocked decisions are shown inline in the current session transcript. Enforcement stays in the server plugin.
 
@@ -195,8 +195,9 @@ plugin receives the host runtime instance.
 
 Tests call the real SDK against a local fetch capture, pack and load this
 package through OpenCode 2.2.6's published `Host.resolve`/`Host.load`, run the
-official Promise adapter, and execute a local counter tool through the real
-OpenCode 2 tool service. For OpenCode 1.19.5, the test fetches five official
+official Promise adapter, verify `silmaril_demo` in the native tool registry,
+and execute both that tool and a local counter tool through the real OpenCode 2
+tool service. For OpenCode 1.19.5, the test fetches five official
 source files and the MIT license at pinned revision
 `810c0eba1a7348036f8bdf61e6632d0c36c6876c`, verifies their SHA-256 hashes,
 AST-extracts the original entrypoint, validator, and consumer functions

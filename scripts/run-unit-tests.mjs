@@ -272,6 +272,7 @@ function mockV2Context(options = pluginOptions(), toolList = []) {
   const hooks = { session: {}, tool: {} };
   const disposed = [];
   const stream = asyncEventStream();
+  const registeredTools = [];
   const register = (domain, name, callback) => {
     hooks[domain][name] = callback;
     return Promise.resolve({
@@ -297,8 +298,27 @@ function mockV2Context(options = pluginOptions(), toolList = []) {
       },
       tool: {
         hook: (name, callback) => register("tool", name, callback),
+        async transform(callback) {
+          callback({
+            list: () => [...toolList, ...registeredTools],
+            get: (id) => [...toolList, ...registeredTools].find(
+              (definition) => definition.id === id || definition.name === id,
+            ),
+            namespace() {},
+            add(definition) {
+              registeredTools.push(definition);
+            },
+            update() {},
+            remove() {},
+          });
+          return {
+            async dispose() {
+              disposed.push("tool.transform");
+            },
+          };
+        },
         async list() {
-          return toolList;
+          return [...toolList, ...registeredTools];
         },
       },
       event: {
@@ -310,6 +330,7 @@ function mockV2Context(options = pluginOptions(), toolList = []) {
     },
     hooks,
     disposed,
+    registeredTools,
     stream,
   };
 }
@@ -1907,8 +1928,179 @@ test("OpenCode 2 prompt hook replaces every associated prompt field without thro
     "session.prompt",
     "tool.execute.after",
     "tool.execute.before",
+    "tool.transform",
   ]);
   assert.ok(host.stream.returnCalls >= 1);
+});
+
+test("OpenCode 2 registers silmaril_demo and uses the safe shared URL builder with a stubbed opener", async () => {
+  resetFirewallStub();
+  const host = mockV2Context(pluginOptions({ mode: "shadow" }));
+  const cleanup = await v2mod.setup(host.context);
+  try {
+    const demo = host.registeredTools.find(
+      (definition) => definition.name === "silmaril_demo",
+    );
+    assert.ok(demo);
+    const result = await demo.execute({
+      route: "playground",
+      open: false,
+      base_url: "https://user:password@preview.example/private?api_key=URL_SECRET",
+    });
+    assert.deepEqual(result.output, {
+      route: "playground",
+      url: "https://preview.example/demo/playground",
+      opened: false,
+    });
+    assert.doesNotMatch(JSON.stringify(result), /password|URL_SECRET|option-key/u);
+
+    const opened = [];
+    const stubbedDemo = v2mod.__testInternals.makeDemoTool(async (url) => {
+      opened.push(url);
+      return true;
+    }, {
+      SILMARIL_API_KEY: "ENV_SECRET",
+      SILMARIL_DEMO_BASE_URL: "preview.example",
+    });
+    const openedResult = await stubbedDemo.execute({ route: "setup", open: true });
+    assert.deepEqual(opened, ["https://preview.example/demo/setup-complete"]);
+    assert.equal(openedResult.output.opened, true);
+    assert.doesNotMatch(JSON.stringify(openedResult), /ENV_SECRET/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("OpenCode 2 debug diagnostics are bounded, content-free, gated, and fail open", async () => {
+  const stderr = [];
+  const originalConsoleError = console.error;
+  console.error = (...values) => {
+    stderr.push(values.join(" "));
+  };
+  const logger = v2mod.__testInternals.makeDebugLogger({ debug: true }, {});
+  const target = {
+    hookEventName: "tool.execute.before",
+    hook: "tool_call",
+    text: "RAW_PROMPT_AND_TOOL_INPUT",
+    toolName: "custom_tool",
+    metadata: { raw: "RAW_METADATA" },
+  };
+
+  try {
+    assert.equal(
+      await v2mod.__testInternals.classifyTarget(
+        target,
+        { debug: true },
+        {},
+        {
+          async getClient() {
+            throw new Error("runtime should not load without config");
+          },
+        },
+        logger,
+      ),
+      undefined,
+    );
+    assert.match(stderr.at(-1), /missing_config/u);
+
+    const configured = {
+      debug: true,
+      silmaril_api_key: "API_KEY_SECRET",
+      silmaril_api_url: "https://private-api.example/classify",
+    };
+    await v2mod.__testInternals.classifyTarget(
+      target,
+      configured,
+      {},
+      {
+        async getClient() {
+          return { status: "sdk_import_failure", errorName: "TypeError" };
+        },
+      },
+      logger,
+    );
+    assert.match(stderr.at(-1), /sdk_import_failure/u);
+
+    await v2mod.__testInternals.classifyTarget(
+      target,
+      configured,
+      {},
+      {
+        async getClient() {
+          return {
+            status: "ready",
+            client: {
+              async classify() {
+                throw new Error("CLASSIFIER_ERROR_SECRET");
+              },
+            },
+          };
+        },
+      },
+      logger,
+    );
+    assert.match(stderr.at(-1), /classification_failure/u);
+
+    const disabled = v2mod.__testInternals.makeDebugLogger(
+      { debug: false },
+      {},
+    );
+    const logCount = stderr.length;
+    disabled("missing_config", { toolName: "should_not_log" });
+    assert.equal(stderr.length, logCount);
+  } finally {
+    console.error = originalConsoleError;
+  }
+
+  const serialized = stderr.join("\n");
+  assert.doesNotMatch(
+    serialized,
+    /RAW_PROMPT|RAW_METADATA|API_KEY_SECRET|private-api|CLASSIFIER_ERROR_SECRET/u,
+  );
+  assert.match(serialized, /"errorName":"(?:TypeError|Error)"/u);
+});
+
+test("OpenCode 2 stderr diagnostics never invoke a non-settling app.log extension", async () => {
+  await withoutSilmarilEnv(async () => {
+    const stderr = [];
+    let appLogCalls = 0;
+    const originalConsoleError = console.error;
+    console.error = (...values) => {
+      stderr.push(values.join(" "));
+    };
+    const host = mockV2Context({ debug: true });
+    host.context.app.log = () => {
+      appLogCalls += 1;
+      return new Promise(() => {});
+    };
+    let cleanup;
+    let deadline;
+    try {
+      cleanup = await v2mod.setup(host.context);
+      await Promise.race([
+        host.hooks.session.prompt({
+          sessionID: "session-v2",
+          messageID: "message-v2",
+          delivery: "queue",
+          prompt: { text: "RAW_PROMPT_SECRET" },
+        }),
+        new Promise((_, reject) => {
+          deadline = setTimeout(
+            () => reject(new Error("debug logging blocked the prompt hook")),
+            1000,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(deadline);
+      if (cleanup) await cleanup();
+      console.error = originalConsoleError;
+    }
+    assert.equal(appLogCalls, 0);
+    assert.equal(stderr.length, 1);
+    assert.match(stderr[0], /missing_config/u);
+    assert.doesNotMatch(stderr[0], /RAW_PROMPT_SECRET/u);
+  });
 });
 
 test("OpenCode 2 tool hooks keep generic namespaces as plain tools and remove all blocked output", async () => {

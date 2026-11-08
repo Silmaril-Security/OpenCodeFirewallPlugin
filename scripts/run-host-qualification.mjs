@@ -124,7 +124,7 @@ try {
 
   console.log("ok - packed server resolves and loads through OpenCode 2.2.6 Host");
   console.log("ok - supplemental OpenCode 1.19.5 binary version and retained server adapter initialize");
-  console.log("ok - OpenCode 2.2.6 Promise adapter runs prompt and real Tool service hooks");
+  console.log("ok - OpenCode 2.2.6 Promise adapter runs prompt hooks, counter execution, and native demo registry");
 } finally {
   globalThis.fetch = originalFetch;
   await rm(qualificationRoot, { recursive: true, force: true });
@@ -206,7 +206,40 @@ async function qualifyV2Runtime(definition, counter) {
         assert.deepEqual(prompt.prompt.agents, []);
         assert.deepEqual(prompt.prompt.skills, []);
 
+        const registeredTools = yield* tools.list();
+        assert.ok(
+          registeredTools.some((definition) => definition.id === "silmaril_demo"),
+          `native OpenCode 2 Tool registry must expose silmaril_demo; got ${
+            JSON.stringify(registeredTools.map(({ id, name }) => ({ id, name })))
+          }`,
+        );
         const snapshot = yield* tools.snapshot();
+        const demoResult = yield* snapshot.execute({
+          sessionID: "session-v2",
+          agent: "build",
+          messageID: "message-demo",
+          call: {
+            type: "tool-call",
+            id: "call-demo",
+            name: "silmaril_demo",
+            input: {
+              route: "playground",
+              open: false,
+              base_url: "https://user:URL_SECRET@preview.example/private?api_key=URL_SECRET",
+            },
+          },
+        });
+        assert.deepEqual(demoResult.output, {
+          route: "playground",
+          url: "https://preview.example/demo/playground",
+          opened: false,
+        });
+        assert.doesNotMatch(
+          JSON.stringify(demoResult),
+          /test-key|URL_SECRET/u,
+        );
+        assert.equal(counter.value, 0);
+
         const blockedBefore = yield* Effect.exit(snapshot.execute({
           sessionID: "session-v2",
           agent: "build",

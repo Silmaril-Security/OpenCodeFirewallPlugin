@@ -13,6 +13,12 @@ import {
   emitLocalProtectionEventBestEffort,
   type LocalProtectionEventInput,
 } from "./local-evidence.js";
+import {
+  buildDemoUrl,
+  openBrowser,
+  type BrowserOpener,
+  type DemoRoute,
+} from "./demo.js";
 
 type Context = Parameters<Plugin.Plugin["setup"]>[0];
 type Cleanup = Plugin.Cleanup;
@@ -46,8 +52,14 @@ type ClassificationResult = BlockResult;
 type FirewallClient = Pick<FirewallInstance, "classify">;
 type FirewallConstructor = new (options: FirewallOptions) => FirewallClient;
 type FirewallSdk = { Firewall: FirewallConstructor };
+type FirewallClientResult =
+  | { status: "ready"; client: FirewallClient }
+  | {
+    status: "sdk_import_failure" | "client_initialization_failure";
+    errorName: string;
+  };
 type FirewallRuntime = {
-  getClient(config: RuntimeConfig): Promise<FirewallClient | undefined>;
+  getClient(config: RuntimeConfig): Promise<FirewallClientResult>;
 };
 type HookTarget = {
   hookEventName: string;
@@ -58,10 +70,43 @@ type HookTarget = {
   callId?: string;
   governance?: GovernanceContext;
 };
+type DebugLogger = (
+  event: DebugEvent,
+  fields?: Record<string, unknown>,
+) => void;
+type DebugEvent =
+  | "classification_result"
+  | "classification_failure"
+  | "client_initialization_failure"
+  | "empty_text"
+  | "event_stream_failure"
+  | "missing_config"
+  | "sdk_import_failure";
+
+const DEMO_INPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    route: { type: "string", enum: ["setup", "playground"] },
+    open: { type: "boolean" },
+    base_url: { type: "string" },
+  },
+} as const;
+const DEMO_OUTPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["route", "url", "opened"],
+  properties: {
+    route: { type: "string", enum: ["setup", "playground"] },
+    url: { type: "string" },
+    opened: { type: "boolean" },
+  },
+} as const;
 
 export async function setup(context: Context): Promise<Cleanup> {
   const options = context.options as RuntimeSource;
   const runtime = createFirewallRuntime();
+  const logger = makeDebugLogger(options, process.env);
   const childParents = new Map<string, string>();
   const registrations: Array<{ dispose(): Promise<void> }> = [];
   const eventController = new AbortController();
@@ -93,9 +138,13 @@ export async function setup(context: Context): Promise<Cleanup> {
   });
 
   const classify = (target: HookTarget) =>
-    classifyTarget(target, options, process.env, runtime);
+    classifyTarget(target, options, process.env, runtime, logger);
 
   try {
+    registrations.push(await context.tool.transform((editor) => {
+      editor.add(makeDemoTool());
+    }));
+
     registrations.push(await context.session.hook("prompt", async (event) => {
       const target: HookTarget = {
         hookEventName: "session.prompt",
@@ -259,7 +308,7 @@ export async function setup(context: Context): Promise<Cleanup> {
     } catch (error) {
       if (!eventController.signal.aborted) {
         // Event observation is fail-open and must not reject plugin setup.
-        void error;
+        logger("event_stream_failure", { errorName: readErrorName(error) });
       }
     }
   })();
@@ -270,6 +319,102 @@ export async function setup(context: Context): Promise<Cleanup> {
     await Promise.allSettled(registrations.map((registration) => registration.dispose()));
     childParents.clear();
   };
+}
+
+function makeDemoTool(
+  opener: BrowserOpener = openBrowser,
+  env: RuntimeSource = process.env,
+) {
+  return {
+    name: "silmaril_demo",
+    description: "Open or return the public Silmaril Firewall demo URL.",
+    input: DEMO_INPUT_SCHEMA,
+    output: DEMO_OUTPUT_SCHEMA,
+    options: { codemode: false as const },
+    async execute(input: unknown) {
+      const args = readRecord(input) ?? {};
+      const route: DemoRoute = args.route === "playground" ? "playground" : "setup";
+      const url = buildDemoUrl(
+        readString(args.base_url) ?? readFirstString(env, ["SILMARIL_DEMO_BASE_URL"]),
+        route,
+      );
+      const opened = args.open === true ? await opener(url) : false;
+      const output = { route, url, opened };
+      return {
+        content: JSON.stringify(output, null, 2),
+        output,
+        metadata: output,
+      };
+    },
+  };
+}
+
+function makeDebugLogger(
+  options: RuntimeSource,
+  env: RuntimeSource,
+): DebugLogger {
+  return (event, fields = {}) => {
+    if (!isDebugEnabled(options, env)) return;
+    const extra = sanitizeDiagnosticFields(fields);
+    try {
+      console.error(
+        `[${PLUGIN_ID}]`,
+        JSON.stringify({ level: "debug", event, ...extra }),
+      );
+    } catch {
+      // Logging must not affect agent execution.
+    }
+  };
+}
+
+function sanitizeDiagnosticFields(
+  fields: Record<string, unknown>,
+): Record<string, string | number | boolean> {
+  const allowed = [
+    "errorName",
+    "governanceAction",
+    "hook",
+    "hookEventName",
+    "mode",
+    "prediction",
+    "score",
+    "threshold",
+    "toolName",
+  ] as const;
+  const result: Record<string, string | number | boolean> = {};
+  for (const key of allowed) {
+    const value = fields[key];
+    if (typeof value === "string" && value.trim()) {
+      result[key] = value.trim().slice(0, 128);
+    } else if (typeof value === "number" && Number.isFinite(value)) {
+      result[key] = value;
+    } else if (typeof value === "boolean") {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+function isDebugEnabled(
+  options: RuntimeSource,
+  env: RuntimeSource,
+): boolean {
+  return readBoolean(
+    readFirstRaw(options, ["debug"])
+      ?? readFirstRaw(env, ["SILMARIL_DEBUG"]),
+  ) ?? false;
+}
+
+function readErrorName(error: unknown): string {
+  try {
+    if (error instanceof Error && error.name.trim()) {
+      return error.name.trim().slice(0, 64);
+    }
+    const name = readString(readRecord(error)?.name);
+    return name?.slice(0, 64) ?? "UnknownError";
+  } catch {
+    return "UnknownError";
+  }
 }
 
 function appendToolWarning(result: {
@@ -369,37 +514,78 @@ async function classifyTarget(
   options: RuntimeSource,
   env: RuntimeSource,
   runtime: FirewallRuntime,
+  logger: DebugLogger,
 ): Promise<ClassificationResult | undefined> {
   const config = resolveRuntimeConfig(options, env);
-  if (!config || !target.text.trim()) return undefined;
-  const firewall = await runtime.getClient(config);
-  if (!firewall) return undefined;
+  if (!config) {
+    logger("missing_config");
+    return undefined;
+  }
+  if (!target.text.trim()) {
+    logger("empty_text", {
+      hookEventName: target.hookEventName,
+      hook: target.hook,
+      toolName: target.toolName,
+    });
+    return undefined;
+  }
+  const runtimeClient = await runtime.getClient(config);
+  if (runtimeClient.status !== "ready") {
+    logger(runtimeClient.status, {
+      hookEventName: target.hookEventName,
+      hook: target.hook,
+      toolName: target.toolName,
+      errorName: runtimeClient.errorName,
+    });
+    return undefined;
+  }
   try {
-    return await firewall.classify(target.text, {
+    const result = await runtimeClient.client.classify(target.text, {
       hook: target.hook,
       toolName: target.toolName,
       governance: target.governance,
       metadata: withProvenance(target.metadata, config.endpointId),
       requestId: buildLogicalRequestId(target),
     });
-  } catch {
+    logger("classification_result", {
+      hookEventName: target.hookEventName,
+      hook: target.hook,
+      toolName: target.toolName,
+      prediction: result.prediction,
+      score: result.score,
+      threshold: result.threshold,
+      mode: result.mode,
+      governanceAction: result.governance?.action,
+    });
+    return result;
+  } catch (error) {
+    logger("classification_failure", {
+      hookEventName: target.hookEventName,
+      hook: target.hook,
+      toolName: target.toolName,
+      errorName: readErrorName(error),
+    });
     return undefined;
   }
 }
 
 function createFirewallRuntime(): FirewallRuntime {
-  let sdkLoadPromise: Promise<FirewallSdk | undefined> | undefined;
+  let sdkLoadPromise: Promise<
+    { sdk: FirewallSdk } | { errorName: string }
+  > | undefined;
   let clientCache: { key: string; client: FirewallClient } | undefined;
-  const loadSdk = async (): Promise<FirewallSdk | undefined> => {
+  const loadSdk = async (): Promise<
+    { sdk: FirewallSdk } | { errorName: string }
+  > => {
     sdkLoadPromise ??= import("@silmaril-security/sdk")
-      .then((module) => ({ Firewall: module.Firewall }))
-      .catch(() => {
+      .then((module) => ({ sdk: { Firewall: module.Firewall } }))
+      .catch((error: unknown) => {
         sdkLoadPromise = undefined;
-        return undefined;
+        return { errorName: readErrorName(error) };
       });
-    const sdk = await sdkLoadPromise;
-    if (!sdk) sdkLoadPromise = undefined;
-    return sdk;
+    const loaded = await sdkLoadPromise;
+    if (!("sdk" in loaded)) sdkLoadPromise = undefined;
+    return loaded;
   };
   return {
     async getClient(config) {
@@ -409,20 +595,33 @@ function createFirewallRuntime(): FirewallRuntime {
         timeoutMs: config.timeoutMs,
         mode: config.mode,
       });
-      if (clientCache?.key === key) return clientCache.client;
-      const sdk = await loadSdk();
-      if (!sdk) {
-        clientCache = undefined;
-        return undefined;
+      if (clientCache?.key === key) {
+        return { status: "ready", client: clientCache.client };
       }
-      const client = new sdk.Firewall({
-        apiKey: config.apiKey,
-        apiUrl: config.apiUrl,
-        timeoutMs: config.timeoutMs,
-        ...(config.mode ? { mode: config.mode } : {}),
-      });
-      clientCache = { key, client };
-      return client;
+      const loaded = await loadSdk();
+      if (!("sdk" in loaded)) {
+        clientCache = undefined;
+        return {
+          status: "sdk_import_failure",
+          errorName: loaded.errorName,
+        };
+      }
+      try {
+        const client = new loaded.sdk.Firewall({
+          apiKey: config.apiKey,
+          apiUrl: config.apiUrl,
+          timeoutMs: config.timeoutMs,
+          ...(config.mode ? { mode: config.mode } : {}),
+        });
+        clientCache = { key, client };
+        return { status: "ready", client };
+      } catch (error) {
+        clientCache = undefined;
+        return {
+          status: "client_initialization_failure",
+          errorName: readErrorName(error),
+        };
+      }
     },
   };
 }
@@ -631,6 +830,9 @@ export const __testInternals = {
   SAFE_PROMPT_NOTICE,
   SAFE_TOOL_CALL_REASON,
   SAFE_TOOL_RESULT_NOTICE,
+  makeDemoTool,
+  makeDebugLogger,
+  classifyTarget,
   resolveRuntimeConfig,
   buildMetadata,
   resolveToolResource,
