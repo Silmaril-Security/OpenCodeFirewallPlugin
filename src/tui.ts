@@ -1,31 +1,31 @@
-import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
+import type { Plugin } from "@opencode/plugin/tui";
 
 const PLUGIN_ID = "opencode-firewall-plugin";
 
-export const SilmarilFirewallTuiPlugin: TuiPlugin = async (api) => {
-  api.keymap.registerLayer({
-    commands: [
-      {
-        name: "silmaril.firewall.status",
-        title: "Silmaril Firewall",
-        category: "Plugin",
-        namespace: "palette",
-        slashName: "silmaril-firewall",
-        run() {
-          api.ui.toast({
-            variant: "info",
-            title: "Silmaril Firewall",
-            message: "Blocked decisions are shown inline in the current session transcript.",
-          });
-        },
-      },
-    ],
-  });
-};
-
-const pluginModule: TuiPluginModule & { id: string } = {
+export const SilmarilFirewallTuiPlugin: Plugin.Definition = {
   id: PLUGIN_ID,
-  tui: SilmarilFirewallTuiPlugin,
+  setup(api) {
+    api.keymap.layer(() => ({
+      commands: [
+        {
+          id: "silmaril.firewall.status",
+          title: "Silmaril Firewall",
+          group: "Plugin",
+          palette: true,
+          slash: {
+            name: "silmaril-firewall",
+          },
+          run() {
+            api.ui.toast.show({
+              variant: "info",
+              title: "Silmaril Firewall",
+              message: "Blocked decisions are shown inline in the current session transcript.",
+            });
+          },
+        },
+      ],
+    }));
+  },
 };
 
-export default pluginModule;
+export default SilmarilFirewallTuiPlugin;

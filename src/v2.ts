@@ -24,7 +24,7 @@ type Context = Parameters<Plugin.Plugin["setup"]>[0];
 type Cleanup = Plugin.Cleanup;
 
 const PLUGIN_ID = "opencode-firewall-plugin";
-const PLUGIN_VERSION = "0.4.7";
+const PLUGIN_VERSION = "0.4.8";
 const DEFAULT_CLASSIFY_TIMEOUT_MS = 2500;
 const MIN_CLASSIFY_TIMEOUT_MS = 250;
 const MAX_CLASSIFY_TIMEOUT_MS = 10000;

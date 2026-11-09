@@ -1,5 +1,28 @@
 # Release notes
 
+## 0.4.8 (unreleased)
+
+The OpenCode 2 TUI now uses the official pinned 2.2.6 `@opencode/plugin/tui`
+`id`/`setup` contract. Its existing `silmaril.firewall.status` command is
+registered in the native palette and as `/silmaril-firewall` through
+`keymap.layer`, and invokes `ui.toast.show`. The official pinned types specify
+host-owned layer removal on plugin deactivation; local qualification does not
+execute that lifecycle.
+
+Host qualification now resolves and loads both packed server and TUI exports
+through OpenCode 2.2.6's published host loader. It inspects the complete packed
+server/TUI/asset payload, exercises the TUI command and toast contract, and
+preserves the existing prompt withholding, before-tool denial, and after-tool
+replacement checks. This deterministic qualification does not claim an
+interactive terminal render: command and toast callbacks use a synthetic
+context after the actual pinned host resolves and loads the TUI module.
+
+OpenCode 2 installation guidance now points to the complete package directory,
+not `dist/server.js`. Retained OpenCode 1 support now declares a minimum host
+version of 1.18.22, while its pinned loader qualification remains 1.19.5.
+OpenCode 2.2.6 still has no final-assistant-text Promise hook. The package
+remains private and `UNLICENSED`; 0.4.8 is not an npm or GitHub publication.
+
 ## 0.4.7
 
 [`v0.4.7`](https://github.com/Silmaril-Security/OpenCodeFirewallPlugin/releases/tag/v0.4.7)
