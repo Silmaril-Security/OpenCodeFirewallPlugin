@@ -1,6 +1,11 @@
 # Release notes
 
-## 0.4.8 (unreleased)
+## 0.4.8
+
+[`v0.4.8`](https://github.com/Silmaril-Security/OpenCodeFirewallPlugin/releases/tag/v0.4.8)
+is the current GitHub source release. Its immutable Git ref
+`refs/tags/v0.4.8` resolves to source commit
+`568b5dc2d256cf9c14bc7acf1f6eac325523580d`.
 
 The OpenCode 2 TUI now uses the official pinned 2.2.6 `@opencode/plugin/tui`
 `id`/`setup` contract. Its existing `silmaril.firewall.status` command is
@@ -21,7 +26,8 @@ OpenCode 2 installation guidance now points to the complete package directory,
 not `dist/server.js`. Retained OpenCode 1 support now declares a minimum host
 version of 1.18.22, while its pinned loader qualification remains 1.19.5.
 OpenCode 2.2.6 still has no final-assistant-text Promise hook. The package
-remains private and `UNLICENSED`; 0.4.8 is not an npm or GitHub publication.
+remains private and `UNLICENSED`; the GitHub release is source-only and 0.4.8
+is not published to npm.
 
 ## 0.4.7
 
