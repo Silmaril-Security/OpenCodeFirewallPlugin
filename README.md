@@ -1,6 +1,8 @@
 # OpenCode Firewall Plugin
 
-Silmaril Firewall native visibility hooks for OpenCode 1.19.5 and 2.2.6.
+Silmaril Firewall native visibility hooks with an OpenCode 1 minimum of
+1.18.22, a retained V1 loader qualification at 1.19.5, and current V2
+qualification at 2.2.6.
 
 This plugin classifies OpenCode lifecycle events with Silmaril Firewall. The
 package exposes one lazy `./server` entry: OpenCode 1 uses its `id/server`
@@ -15,10 +17,13 @@ This repository is intended to be public, but it is not OSI-licensed yet. Until 
 
 ## Release Status
 
-Version 0.4.7 is available as the [`v0.4.7` GitHub release](https://github.com/Silmaril-Security/OpenCodeFirewallPlugin/releases/tag/v0.4.7).
-Its immutable Git source ref is `refs/tags/v0.4.7`, resolving to commit
-`90fcd559d9bd02de218a47af9e7ac302044ce95f`. The package remains private and
-`UNLICENSED`, with npm publishing blocked. Check out the exact Git ref:
+Version 0.4.8 is the current source candidate and has not been published.
+Version 0.4.7 remains available as the
+[`v0.4.7` GitHub release](https://github.com/Silmaril-Security/OpenCodeFirewallPlugin/releases/tag/v0.4.7).
+That historical artifact remains at immutable Git ref `refs/tags/v0.4.7`,
+resolving to commit `90fcd559d9bd02de218a47af9e7ac302044ce95f`.
+The package remains private and `UNLICENSED`, with npm publishing blocked.
+Check out the exact published Git ref:
 
 ```sh
 git clone https://github.com/Silmaril-Security/OpenCodeFirewallPlugin.git
@@ -33,21 +38,21 @@ likewise require `npm ci` followed by `npm run build`.
 
 ## Install
 
-For local development, build this package and register the built plugin with opencode:
+For OpenCode 2.2.6 local development, build the complete package directory:
 
 ```sh
-npm install
+npm ci
 npm run build
 ```
 
-Then add the plugin to `opencode.json`:
+Then add that directory to `opencode.json`:
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
     [
-      "file:///absolute/path/to/OpenCodeFirewallPlugin/dist/server.js",
+      "file:///absolute/path/to/OpenCodeFirewallPlugin",
       {
         "silmaril_api_url": "https://...",
         "silmaril_api_key": "...",
@@ -61,10 +66,21 @@ Then add the plugin to `opencode.json`:
 }
 ```
 
-For a built local plugin, set the file URL to `dist/server.js` (the
-`dist/index.js` root remains the OpenCode 1 async plugin API for existing
-programmatic consumers). Installed packages are discovered through their
-`./server` export automatically.
+OpenCode 2 local paths are package directories, not individual distribution
+files. From the directory's `package.json`, the 2.2.6 host resolves both the
+`./server` and `./tui` exports. A managed or locally installed copy must
+therefore retain the complete package payload, including `package.json`,
+`dist/`, `opencode/`, and the packaged asset installer. Pointing configuration
+at `dist/server.js` loads only one file and does not provide the TUI or assets.
+
+For retained OpenCode 1, use the complete package as a package/directory
+plugin so its loader selects the `./server` export; the `dist/index.js` root
+remains the V1 async plugin API for existing programmatic consumers. The
+supported V1 floor is 1.18.22 because earlier hosts include the affected
+server-upgrade line. The pinned legacy loader qualification runs at 1.19.5;
+it does not claim full-turn qualification for every version in that range.
+OpenCode hosts below 1.18.22 must be rejected rather than admitted in
+standalone or managed compatibility metadata.
 
 Install the OpenCode-visible skill and slash command into your global OpenCode config:
 
@@ -107,7 +123,13 @@ Every classifier request carries plugin-owned `metadata.silmaril.provenance` wit
 
 Set `debug=true` or `SILMARIL_DEBUG=true` to write compact diagnostic summaries. OpenCode 1 uses `client.app.log()`. OpenCode 2.2.6 exposes only app name, version, and channel on its Promise context, so v2 writes bounded JSON diagnostics synchronously to stderr and does not call an invented host logging extension. Diagnostics identify missing configuration, SDK loading, client initialization, classification failures, and compact classification outcomes. They omit API keys, API URLs, exception messages, raw prompts, tool inputs, tool outputs, metadata payloads, and assistant text.
 
-The package also exposes a TUI entrypoint at `dist/tui.js` / `@silmaril/opencode-firewall-plugin/tui`. It registers `/silmaril-firewall`, which tells users that blocked decisions are shown inline in the current session transcript. Enforcement stays in the server plugin.
+The package also exposes a TUI entrypoint through its `./tui` package export.
+It registers the `silmaril.firewall.status` palette command and
+`/silmaril-firewall`, which show a native toast explaining that blocked
+decisions appear inline in the current session transcript. The official pinned
+2.2.6 types specify that the host removes keymap layers when a plugin
+deactivates; local qualification does not execute that host lifecycle.
+Enforcement stays in the server plugin.
 
 ## Demo
 
@@ -196,14 +218,15 @@ verify that a consequence was prevented.
 Requires Node.js 22 or newer.
 
 ```sh
-npm install
+npm ci
 npm run typecheck
 npm test
 npm run build
 npm pack --dry-run
 ```
 
-The package pins `@silmaril-security/sdk` to `0.8.2`, develops against
+The package pins `@silmaril-security/sdk` to `0.8.2`, requires retained
+`@opencode-ai/plugin` hosts to be at least 1.18.22, develops against
 `opencode-ai` and `@opencode-ai/plugin` 1.19.5, and qualifies the actual
 `@opencode/cli`, `@opencode/plugin`, `@opencode/core`, and `@opencode/util`
 2.2.6 packages. `effect` is a peer dependency and a development dependency.
@@ -211,11 +234,17 @@ As required by OpenCode's plugin packaging contract, bundlers must keep
 `effect`, `effect/*`, and `@opencode/plugin` entry points external so the
 plugin receives the host runtime instance.
 
-Tests call the real SDK against a local fetch capture, pack and load this
-package through OpenCode 2.2.6's published `Host.resolve`/`Host.load`, run the
-official Promise adapter, verify `silmaril_demo` in the native tool registry,
-and execute both that tool and a local counter tool through the real OpenCode 2
-tool service. For OpenCode 1.19.5, the test fetches five official
+Tests call the real SDK against a local fetch capture, inspect the complete
+packed payload, and load both the package's server and TUI exports through
+OpenCode 2.2.6's published `Host.resolve`/`Host.load`. They run the official
+Promise adapter, verify `silmaril_demo` in the native tool registry, execute
+both that tool and a local counter tool through the real OpenCode 2 tool
+service, and invoke the TUI's palette/slash command against the pinned
+keymap/toast contract. The TUI qualification is deterministic and
+non-interactive: the actual pinned host resolves and loads the module, while a
+synthetic callback context verifies the layer factory, command registration,
+and toast invocation. It does not exercise host deactivation or claim an
+interactive terminal render. For OpenCode 1.19.5, the test fetches five official
 source files and the MIT license at pinned revision
 `810c0eba1a7348036f8bdf61e6632d0c36c6876c`, verifies their SHA-256 hashes,
 AST-extracts the original entrypoint, validator, and consumer functions

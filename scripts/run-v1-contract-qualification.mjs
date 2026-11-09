@@ -129,6 +129,7 @@ try {
   // compares package and entry paths.
   const directory = await realpath(path.join(packDirectory, "package"));
   const packageJson = JSON.parse(await readFile(path.join(directory, "package.json"), "utf8"));
+  assert.equal(packageJson.peerDependencies["@opencode-ai/plugin"], ">=1.18.22");
   const descriptor = {
     dir: directory,
     pkg: packageJson.name,

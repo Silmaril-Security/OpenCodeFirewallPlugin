@@ -52,6 +52,18 @@ try {
   ], { cwd: repoRoot });
   const packResult = JSON.parse(packed.stdout);
   assert.equal(packResult.length, 1);
+  const packedPaths = new Set(packResult[0].files.map(({ path: file }) => file));
+  for (const required of [
+    "dist/index.js",
+    "dist/server.js",
+    "dist/tui.js",
+    "opencode/commands/silmaril-demo.md",
+    "opencode/skills/silmaril-demo/SKILL.md",
+    "package.json",
+    "scripts/install-opencode-assets.mjs",
+  ]) {
+    assert.equal(packedPaths.has(required), true, `packed payload missing ${required}`);
+  }
   const tarball = path.join(packRoot, packResult[0].filename);
   await writeFile(
     path.join(consumerRoot, "package.json"),
@@ -74,11 +86,20 @@ try {
   );
   const entries = Host.resolve({ directory: packageDirectory });
   assert.ok(entries.server?.endsWith("/dist/server.js"), entries.server);
+  assert.ok(entries.tui?.endsWith("/dist/tui.js"), entries.tui);
   const loaded = await Host.load(entries.server);
   assert.deepEqual(Object.keys(loaded), ["default"]);
   assert.equal(loaded.default.id, "silmaril-firewall");
   assert.equal(typeof loaded.default.server, "function");
   assert.equal(typeof loaded.default.setup, "function");
+  const loadedTui = await Host.load(entries.tui);
+  assert.deepEqual(
+    Object.keys(loadedTui).sort(),
+    ["SilmarilFirewallTuiPlugin", "default"],
+  );
+  assert.equal(loadedTui.default.id, "opencode-firewall-plugin");
+  assert.equal(typeof loadedTui.default.setup, "function");
+  await qualifyTuiWithSyntheticContext(loadedTui.default);
 
   const oldHooks = await loaded.default.server(oldPluginInput(), {});
   assert.equal(typeof oldHooks["chat.message"], "function");
@@ -90,6 +111,7 @@ try {
   );
   assert.equal(packageJson.exports["./server"].import, "./dist/server.js");
   assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.8.2");
+  assert.equal(packageJson.peerDependencies["@opencode-ai/plugin"], ">=1.18.22");
 
   let requestBodies = [];
   globalThis.fetch = async (_input, init) => {
@@ -123,11 +145,59 @@ try {
   assert.equal(toolRequest.metadata.agent, "build");
 
   console.log("ok - packed server resolves and loads through OpenCode 2.2.6 Host");
+  console.log("ok - packed TUI resolves and loads through OpenCode 2.2.6 Host");
+  console.log("ok - synthetic 2.2.6 TUI callback context verifies palette/slash registration and toast invocation");
+  console.log("ok - packed payload contains both runtime entrypoints and OpenCode-visible assets");
   console.log("ok - supplemental OpenCode 1.19.5 binary version and retained server adapter initialize");
   console.log("ok - OpenCode 2.2.6 Promise adapter runs prompt hooks, counter execution, and native demo registry");
 } finally {
   globalThis.fetch = originalFetch;
   await rm(qualificationRoot, { recursive: true, force: true });
+}
+
+async function qualifyTuiWithSyntheticContext(definition) {
+  const layers = [];
+  const toasts = [];
+  const context = {
+    keymap: {
+      layer(factory) {
+        layers.push(factory);
+      },
+    },
+    ui: {
+      toast: {
+        show(options) {
+          toasts.push(options);
+        },
+      },
+    },
+  };
+
+  const cleanup = await definition.setup(context);
+  assert.equal(cleanup, undefined);
+  assert.equal(layers.length, 1);
+  const layer = layers[0]();
+  assert.equal(layer.commands.length, 1);
+  const command = layer.commands[0];
+  assert.deepEqual({
+    id: command.id,
+    title: command.title,
+    group: command.group,
+    palette: command.palette,
+    slash: command.slash,
+  }, {
+    id: "silmaril.firewall.status",
+    title: "Silmaril Firewall",
+    group: "Plugin",
+    palette: true,
+    slash: { name: "silmaril-firewall" },
+  });
+  await command.run();
+  assert.deepEqual(toasts, [{
+    variant: "info",
+    title: "Silmaril Firewall",
+    message: "Blocked decisions are shown inline in the current session transcript.",
+  }]);
 }
 
 async function qualifyV2Runtime(definition, counter) {
