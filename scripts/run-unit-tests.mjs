@@ -19,6 +19,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { Firewall as RealFirewall } from "@silmaril-security/sdk";
 import { openBrowser } from "./open-browser.mjs";
+import {
+  evaluateSessionEvidence,
+  hasPaletteResultRow,
+  hasSlashResultRow,
+  processSnapshot,
+  ProcessObservationError,
+} from "./run-native-tui-qualification.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = path.join(repoRoot, ".unit-test-build");
@@ -2389,10 +2396,86 @@ test("demo launcher, tool, and OpenCode assets build public URLs without credent
   assert.equal(command.includes("secret-key"), false);
 });
 
-test("source and dependency invariants: exact host package pins, SDK 0.8.2, and blocked publication", async () => {
+test("native palette evidence requires the bounded result row, not search text", () => {
+  assert.equal(hasPaletteResultRow("Silmaril Firewall"), false);
+  assert.equal(
+    hasPaletteResultRow("Silmaril Firewall    No results found"),
+    false,
+  );
+  assert.equal(
+    hasPaletteResultRow(
+      "Silmaril Firewall   Silmaril Firewall                             Plugin",
+    ),
+    true,
+  );
+});
+
+test("native slash evidence requires the bounded completion row", () => {
+  assert.equal(hasSlashResultRow("/silmaril-firewall"), false);
+  assert.equal(
+    hasSlashResultRow("/silmaril-firewall   Silmaril Firewall"),
+    true,
+  );
+});
+
+test("failed process observation throws bounded redacted evidence", () => {
+  const rawStderr = "RAW_PRIVATE_PROCESS_STDERR";
+  assert.throws(
+    () =>
+      processSnapshot(() => ({
+        status: 9,
+        stdout: "",
+        stderr: rawStderr,
+      })),
+    (error) => {
+      assert.ok(error instanceof ProcessObservationError);
+      const serialized = JSON.stringify({
+        message: error.message,
+        processObservation: error.processObservation,
+      });
+      assert.doesNotMatch(serialized, /RAW_PRIVATE_PROCESS_STDERR/u);
+      assert.ok(serialized.length < 512);
+      assert.deepEqual(error.processObservation.stderr, {
+        present: true,
+        bytes: Buffer.byteLength(rawStderr),
+        truncated: false,
+      });
+      return true;
+    },
+  );
+});
+
+test("unavailable process observation cannot verify cleanup or pass a session", () => {
+  const result = evaluateSessionEvidence({
+    interactionSucceeded: true,
+    resultRowVisible: true,
+    toastRendered: true,
+    cleanSigintExit: true,
+    processObservationSucceeded: false,
+    remainingAfterCleanup: [],
+  });
+  assert.deepEqual(result, {
+    cleanupComplete: false,
+    passed: false,
+  });
+  assert.equal(
+    evaluateSessionEvidence({
+      interactionSucceeded: true,
+      resultRowVisible: true,
+      toastRendered: true,
+      cleanSigintExit: true,
+      processObservationSucceeded: true,
+      remainingAfterCleanup: null,
+    }).passed,
+    false,
+  );
+});
+
+test("source and dependency invariants: exact host and native PTY pins, SDK 0.8.2, and blocked publication", async () => {
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.4.8");
+  assert.equal(packageJson.version, "0.4.9");
   assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.8.2");
+  assert.equal(packageJson.devDependencies["@lydell/node-pty"], "1.2.0-beta.12");
   assert.equal(packageJson.devDependencies["@opencode-ai/plugin"], "1.19.5");
   assert.equal(packageJson.devDependencies["opencode-ai"], "1.19.5");
   assert.equal(packageJson.peerDependencies["@opencode-ai/plugin"], ">=1.18.22");
