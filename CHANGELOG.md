@@ -1,6 +1,11 @@
 # Release notes
 
-## 0.4.9 (local source candidate)
+## 0.4.9 (2026-11-09)
+
+[`v0.4.9`](https://github.com/Silmaril-Security/OpenCodeFirewallPlugin/releases/tag/v0.4.9)
+is the current immutable GitHub source release. Its immutable Git ref
+`refs/tags/v0.4.9` resolves to source commit
+`3a8b2810f8300dd28e0ff1adffc7de81a0c14b30`.
 
 OpenCode 2.2.6 assigns an omitted keymap-layer mode to `base`, while slash
 completion and the command palette use `autocomplete` and `modal`
@@ -28,7 +33,7 @@ remains private and `UNLICENSED`, and npm publication remains blocked.
 ## 0.4.8
 
 [`v0.4.8`](https://github.com/Silmaril-Security/OpenCodeFirewallPlugin/releases/tag/v0.4.8)
-is the current GitHub source release. Its immutable Git ref
+is an immutable GitHub source release. Its immutable Git ref
 `refs/tags/v0.4.8` resolves to source commit
 `568b5dc2d256cf9c14bc7acf1f6eac325523580d`.
 
