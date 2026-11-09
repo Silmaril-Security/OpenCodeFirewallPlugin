@@ -17,18 +17,19 @@ This repository is intended to be public, but it is not OSI-licensed yet. Until 
 
 ## Release Status
 
-Version 0.4.8 is the current source candidate and has not been published.
-Version 0.4.7 remains available as the
-[`v0.4.7` GitHub release](https://github.com/Silmaril-Security/OpenCodeFirewallPlugin/releases/tag/v0.4.7).
-That historical artifact remains at immutable Git ref `refs/tags/v0.4.7`,
-resolving to commit `90fcd559d9bd02de218a47af9e7ac302044ce95f`.
-The package remains private and `UNLICENSED`, with npm publishing blocked.
-Check out the exact published Git ref:
+Version 0.4.8 is the current
+[`v0.4.8` GitHub source release](https://github.com/Silmaril-Security/OpenCodeFirewallPlugin/releases/tag/v0.4.8).
+Its immutable Git ref `refs/tags/v0.4.8` resolves to source commit
+`568b5dc2d256cf9c14bc7acf1f6eac325523580d`.
+This is a source-only GitHub release. The package remains private and
+`UNLICENSED`, with npm publishing blocked.
+
+Check out and build that exact release:
 
 ```sh
 git clone https://github.com/Silmaril-Security/OpenCodeFirewallPlugin.git
 cd OpenCodeFirewallPlugin
-git checkout --detach refs/tags/v0.4.7
+git checkout --detach refs/tags/v0.4.8
 npm ci
 npm run build
 ```
