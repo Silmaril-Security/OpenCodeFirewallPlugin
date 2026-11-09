@@ -2389,10 +2389,11 @@ test("demo launcher, tool, and OpenCode assets build public URLs without credent
   assert.equal(command.includes("secret-key"), false);
 });
 
-test("source and dependency invariants: exact host package pins, SDK 0.8.2, and blocked publication", async () => {
+test("source and dependency invariants: exact host and native PTY pins, SDK 0.8.2, and blocked publication", async () => {
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.4.8");
+  assert.equal(packageJson.version, "0.4.9");
   assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.8.2");
+  assert.equal(packageJson.devDependencies["@lydell/node-pty"], "1.2.0-beta.12");
   assert.equal(packageJson.devDependencies["@opencode-ai/plugin"], "1.19.5");
   assert.equal(packageJson.devDependencies["opencode-ai"], "1.19.5");
   assert.equal(packageJson.peerDependencies["@opencode-ai/plugin"], ">=1.18.22");

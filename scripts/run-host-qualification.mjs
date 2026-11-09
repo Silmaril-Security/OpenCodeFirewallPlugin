@@ -177,6 +177,7 @@ async function qualifyTuiWithSyntheticContext(definition) {
   assert.equal(cleanup, undefined);
   assert.equal(layers.length, 1);
   const layer = layers[0]();
+  assert.equal(layer.mode, "global");
   assert.equal(layer.commands.length, 1);
   const command = layer.commands[0];
   assert.deepEqual({

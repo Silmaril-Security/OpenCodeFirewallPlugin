@@ -1,5 +1,30 @@
 # Release notes
 
+## 0.4.9 (local source candidate)
+
+OpenCode 2.2.6 assigns an omitted keymap-layer mode to `base`, while slash
+completion and the command palette use `autocomplete` and `modal`
+respectively and list only reachable commands. The existing
+`silmaril.firewall.status` layer now explicitly uses the public `global` mode,
+making `Silmaril Firewall` reachable from both discovery surfaces without
+changing its ID, title, group, slash name, or native toast.
+
+Deterministic host qualification now asserts that global mode in addition to
+its existing callback contract. A separate opt-in real-PTY harness rebuilds
+the current package, configures the complete package directory in a fresh
+`/private/tmp` workspace, and drives two fresh `@opencode/cli` 2.2.6
+`--standalone` sessions. It retains external raw, terminal-stripped, and JSON
+evidence for slash and palette selection, the exact rendered toast, owned
+SIGINT termination, and owned-process cleanup. It uses private HOME/XDG trees
+and an allowlisted child environment without credentials, accounts, model
+configuration, prompts, hooks, or protection changes.
+
+The public 2.2.6 TUI API documents host-owned layer removal but provides no
+native observation of plugin deactivation. The harness does not manually
+clear registrations, so that lifecycle remains an explicit evidence gap.
+Version 0.4.8, its tag, archives, and receipts remain immutable. The package
+remains private and `UNLICENSED`, and npm publication remains blocked.
+
 ## 0.4.8
 
 [`v0.4.8`](https://github.com/Silmaril-Security/OpenCodeFirewallPlugin/releases/tag/v0.4.8)

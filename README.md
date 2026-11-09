@@ -17,7 +17,8 @@ This repository is intended to be public, but it is not OSI-licensed yet. Until 
 
 ## Release Status
 
-Version 0.4.8 is the current
+Version 0.4.9 is a local source candidate for review; it is not a published
+release. Version 0.4.8 remains the current immutable
 [`v0.4.8` GitHub source release](https://github.com/Silmaril-Security/OpenCodeFirewallPlugin/releases/tag/v0.4.8).
 Its immutable Git ref `refs/tags/v0.4.8` resolves to source commit
 `568b5dc2d256cf9c14bc7acf1f6eac325523580d`.
@@ -127,10 +128,16 @@ Set `debug=true` or `SILMARIL_DEBUG=true` to write compact diagnostic summaries.
 The package also exposes a TUI entrypoint through its `./tui` package export.
 It registers the `silmaril.firewall.status` palette command and
 `/silmaril-firewall`, which show a native toast explaining that blocked
-decisions appear inline in the current session transcript. The official pinned
-2.2.6 types specify that the host removes keymap layers when a plugin
-deactivates; local qualification does not execute that host lifecycle.
-Enforcement stays in the server plugin.
+decisions appear inline in the current session transcript. OpenCode 2.2.6
+translates a keymap layer with no mode to `base`, while the command palette uses
+`modal`, slash completion uses `autocomplete`, and both discovery surfaces ask
+for reachable commands. The plugin therefore declares its layer `global`, the
+official public opt-out from mode restriction. The command identity and toast
+contract are otherwise unchanged. The pinned types specify that the host
+removes keymap layers when a plugin deactivates, but expose no native
+observation for that cleanup; qualification does not manually clear
+registrations or claim the unobserved lifecycle. Enforcement stays in the
+server plugin.
 
 ## Demo
 
@@ -226,6 +233,25 @@ npm run build
 npm pack --dry-run
 ```
 
+The native OpenCode 2.2.6 TUI qualification is an explicit, macOS PTY run and
+is not part of ordinary unit or host tests:
+
+```sh
+npm run qualify:native -- --output /absolute/external/receipt-directory
+```
+
+It rebuilds current `dist`, runs the exact installed
+`node_modules/@opencode/cli/bin/opencode.exe` with `--standalone`, and starts
+fresh slash-completion and command-palette sessions. The harness creates its
+workspace below `/private/tmp`, gives each session a private HOME and XDG
+tree, passes only an allowlisted child environment, and configures this
+complete package directory through the supported project plugin tuple. It
+refuses to overwrite receipts and retains raw PTY bytes, terminal-stripped
+text, per-session JSON, and one summary in the requested external directory.
+A pass comes from the exact rendered toast in both captures, command text in
+the captures, an owned SIGINT exit, and explicit evidence that no observed
+owned process remains.
+
 The package pins `@silmaril-security/sdk` to `0.8.2`, requires retained
 `@opencode-ai/plugin` hosts to be at least 1.18.22, develops against
 `opencode-ai` and `@opencode-ai/plugin` 1.19.5, and qualifies the actual
@@ -245,8 +271,11 @@ keymap/toast contract. The TUI qualification is deterministic and
 non-interactive: the actual pinned host resolves and loads the module, while a
 synthetic callback context verifies the layer factory, command registration,
 and toast invocation. It does not exercise host deactivation or claim an
-interactive terminal render. For OpenCode 1.19.5, the test fetches five official
-source files and the MIT license at pinned revision
+interactive terminal render. The separate opt-in native PTY qualification is
+the evidence for real 2.2.6 slash completion, palette selection, and toast
+rendering; callback invocation remains supplemental. Neither qualification can
+observe host deactivation through the public native API. For OpenCode 1.19.5,
+the test fetches five official source files and the MIT license at pinned revision
 `810c0eba1a7348036f8bdf61e6632d0c36c6876c`, verifies their SHA-256 hashes,
 AST-extracts the original entrypoint, validator, and consumer functions
 unchanged, erases only TypeScript syntax, and runs them against the current

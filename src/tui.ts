@@ -6,6 +6,7 @@ export const SilmarilFirewallTuiPlugin: Plugin.Definition = {
   id: PLUGIN_ID,
   setup(api) {
     api.keymap.layer(() => ({
+      mode: "global",
       commands: [
         {
           id: "silmaril.firewall.status",
