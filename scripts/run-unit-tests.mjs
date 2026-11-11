@@ -28,6 +28,7 @@ import {
 } from "./run-native-tui-qualification.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const packageVersion = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8")).version;
 const outDir = path.join(repoRoot, ".unit-test-build");
 const outFile = path.join(outDir, "index-under-test.mjs");
 const v2OutFile = path.join(outDir, "v2-under-test.mjs");
@@ -1866,7 +1867,7 @@ test("governance-only local evidence keeps BENIGN and marks observer blocking un
     assert.equal(event.policyDecision, "monitor");
     assert.equal(event.nativeAction, "unavailable");
     assert.equal(event.blockUnavailable, true);
-    assert.equal(event.provenance.pluginVersion, "0.4.8");
+    assert.equal(event.provenance.pluginVersion, packageVersion);
   } finally {
     if (savedDirectory === undefined) {
       delete process.env.SILMARIL_LOCAL_EVENT_DIR;
@@ -2474,6 +2475,10 @@ test("unavailable process observation cannot verify cleanup or pass a session", 
 test("source and dependency invariants: exact host and native PTY pins, SDK 0.8.2, and blocked publication", async () => {
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
   assert.equal(packageJson.version, "0.4.9");
+  for (const file of ["index.ts", "v2.ts"]) {
+    const runtimeSource = await readFile(path.join(repoRoot, "src", file), "utf8");
+    assert.equal(runtimeSource.match(/const PLUGIN_VERSION = "([^"]+)";/)?.[1], packageJson.version);
+  }
   assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.8.2");
   assert.equal(packageJson.devDependencies["@lydell/node-pty"], "1.2.0-beta.12");
   assert.equal(packageJson.devDependencies["@opencode-ai/plugin"], "1.19.5");
