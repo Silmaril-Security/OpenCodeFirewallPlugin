@@ -19,6 +19,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { Firewall as RealFirewall } from "@silmaril-security/sdk";
 import { openBrowser } from "./open-browser.mjs";
+import { execute } from "./qualification-harness.mjs";
 import {
   evaluateSessionEvidence,
   hasPaletteResultRow,
@@ -2550,9 +2551,11 @@ function nativeModelRequest(toolOutputs) {
   };
 }
 
+const nativeCleanHost = { exitCode: 0, signal: null, timedOut: false };
+
 function nativeAllowEvidence(plan, overrides = {}) {
   return {
-    host: { exitCode: 0 },
+    host: nativeCleanHost,
     effectText: plan.effectText,
     classifierRequests: [
       nativeClassifierRequest("user_input", "allow"),
@@ -2571,14 +2574,38 @@ function nativeAllowEvidence(plan, overrides = {}) {
   };
 }
 
-function nativeToolResponseEvidence(plan, replacement, decision = "block") {
+function nativePreToolBlockEvidence() {
   return {
-    host: { exitCode: 0 },
+    host: nativeCleanHost,
+    effectText: undefined,
+    classifierRequests: [
+      nativeClassifierRequest("user_input", "allow"),
+      nativeClassifierRequest("tool_call", "block"),
+    ],
+    modelRequests: [
+      nativeModelRequest({
+        call_pre_tool_block_write: `${BLOCK_NOTICE} this tool call.`,
+      }),
+    ],
+  };
+}
+
+function nativeToolResponseEvidence(
+  plan,
+  replacement,
+  decision = "block",
+  attackRequest = {},
+) {
+  return {
+    host: nativeCleanHost,
     effectText: undefined,
     classifierRequests: [
       nativeClassifierRequest("user_input", "allow"),
       nativeClassifierRequest("tool_call", "allow"),
-      nativeClassifierRequest("tool_response", decision, { text: plan.poison }),
+      nativeClassifierRequest("tool_response", decision, {
+        text: plan.poison,
+        ...attackRequest,
+      }),
     ],
     modelRequests: [
       nativeModelRequest({ call_tool_response_block_read: replacement }),
@@ -2668,19 +2695,7 @@ test("native acceptance allow needs the effect on disk and tool output in the ne
 
 test("native acceptance pre-tool-block fails when the effect exists or the tool ran", () => {
   const plan = nativePlan("pre-tool-block");
-  const evidence = {
-    host: { exitCode: 0 },
-    effectText: undefined,
-    classifierRequests: [
-      nativeClassifierRequest("user_input", "allow"),
-      nativeClassifierRequest("tool_call", "block"),
-    ],
-    modelRequests: [
-      nativeModelRequest({
-        call_pre_tool_block_write: `${BLOCK_NOTICE} this tool call.`,
-      }),
-    ],
-  };
+  const evidence = nativePreToolBlockEvidence();
   const passed = evaluateScenario(plan, evidence, undefined);
   assert.equal(passed.status, "PASS");
   assert.equal(passed.effect_present, false);
@@ -2700,11 +2715,55 @@ test("native acceptance pre-tool-block fails when the effect exists or the tool 
   assert.equal(executed.status, "FAIL");
   assert.equal(executed.effect_present, true);
   assert.deepEqual(executed.checks, {
+    host_exit_zero: true,
+    host_within_deadline: true,
     tool_call_blocked: true,
     effect_file_absent: false,
     tool_never_executed: false,
     denial_reached_model: true,
   });
+});
+
+test("native acceptance fails every scenario whose host crashed or timed out", () => {
+  const toolResponsePlan = nativePlan("tool-response-block");
+  const passing = [
+    [nativePlan("allow"), nativeAllowEvidence(nativePlan("allow"))],
+    [nativePlan("pre-tool-block"), nativePreToolBlockEvidence()],
+    [
+      toolResponsePlan,
+      nativeToolResponseEvidence(
+        toolResponsePlan,
+        `${BLOCK_NOTICE} this tool result.`,
+      ),
+    ],
+  ];
+  for (const [plan, evidence] of passing) {
+    assert.equal(evaluateScenario(plan, evidence, undefined).status, "PASS");
+
+    const crashed = evaluateScenario(
+      plan,
+      { ...evidence, host: { exitCode: 1, signal: null, timedOut: false } },
+      undefined,
+    );
+    assert.equal(crashed.status, "FAIL", plan.id);
+    assert.equal(crashed.checks.host_exit_zero, false);
+    assert.equal(crashed.checks.host_within_deadline, true);
+
+    const timedOut = evaluateScenario(
+      plan,
+      { ...evidence, host: { exitCode: null, signal: "SIGKILL", timedOut: true } },
+      undefined,
+    );
+    assert.equal(timedOut.status, "FAIL", plan.id);
+    assert.equal(timedOut.checks.host_exit_zero, false);
+    assert.equal(timedOut.checks.host_within_deadline, false);
+    assert.deepEqual(
+      Object.entries(timedOut.checks)
+        .filter(([, passed]) => !passed)
+        .map(([name]) => name),
+      ["host_exit_zero", "host_within_deadline"],
+    );
+  }
 });
 
 test("native acceptance tool-response-block fails when poison reaches any model request", () => {
@@ -2805,6 +2864,77 @@ test("native acceptance marks classifier-caused live failures BLOCKED and plugin
   assert.equal(loopbackNeverBlocked.status, "FAIL");
 });
 
+test("native acceptance live runs pass on the locally configured block mode and never on an unseen verdict", () => {
+  const plan = nativePlan("tool-response-block", true);
+  const live = { url: "https://cascade.invalid/classify", key: "unit-key" };
+  const replacement = `${BLOCK_NOTICE} this tool result.`;
+  for (const mode of [null, "shadow"]) {
+    const enforcedLocally = evaluateScenario(
+      plan,
+      nativeToolResponseEvidence(plan, replacement, "block", {
+        upstream: { prediction: "MALICIOUS", mode, action: "allow" },
+      }),
+      live,
+    );
+    assert.equal(enforcedLocally.status, "PASS");
+    assert.equal(Object.hasOwn(enforcedLocally, "blocker"), false);
+  }
+
+  const verdictAfterDeadline = evaluateScenario(
+    plan,
+    nativeToolResponseEvidence(plan, replacement, "block", {
+      durationMs: CLASSIFY_DEADLINE_MS,
+    }),
+    live,
+  );
+  assert.equal(Object.values(verdictAfterDeadline.checks).every(Boolean), true);
+  assert.equal(verdictAfterDeadline.status, "BLOCKED");
+  assert.equal(verdictAfterDeadline.blocker, "classifier_exceeded_plugin_deadline");
+
+  const allowPlan = nativePlan("allow", true);
+  const failedOpen = evaluateScenario(
+    allowPlan,
+    nativeAllowEvidence(allowPlan, {
+      classifierRequests: [
+        nativeClassifierRequest("user_input", null, { outcome: "invalid_response" }),
+        ...nativeAllowEvidence(allowPlan).classifierRequests.slice(1),
+      ],
+    }),
+    live,
+  );
+  assert.equal(failedOpen.status, "BLOCKED");
+  assert.equal(failedOpen.blocker, "classifier_request_failed");
+});
+
+test("native acceptance writes a failing live receipt when the classifier key is missing", async () => {
+  const receiptPath = path.join(outDir, "native-missing-key", "live-receipt.json");
+  const sourceSha = "0123456789abcdef0123456789abcdef01234567";
+  await assert.rejects(
+    execute(
+      process.execPath,
+      [path.join(repoRoot, "scripts", "run-native-acceptance.mjs")],
+      {
+        env: {
+          GITHUB_SHA: sourceSha,
+          NATIVE_ACCEPTANCE_RECEIPT: receiptPath,
+          CUSTOMER_NATIVE_CLASSIFIER: "live",
+          CUSTOMER_NATIVE_API_URL: "https://cascade.invalid/classify",
+        },
+      },
+    ),
+    { code: 1 },
+  );
+  const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+  assert.equal(receipt.schema, "silmaril.native-acceptance.v1");
+  assert.equal(receipt.status, "FAIL");
+  assert.equal(receipt.classifier, "live");
+  assert.equal(receipt.source_sha, sourceSha);
+  assert.deepEqual(receipt.scenarios, []);
+  assert.deepEqual(receipt.classifier_requests, []);
+  assert.equal(receipt.error.name, "AssertionError");
+  assert.match(receipt.error.message, /CUSTOMER_NATIVE_API_KEY/u);
+});
+
 test("native acceptance live mode requires an https endpoint and a key", () => {
   assert.equal(resolveLiveClassifier({}), undefined);
   assert.equal(resolveLiveClassifier({ CUSTOMER_NATIVE_CLASSIFIER: "loopback" }), undefined);
@@ -2878,6 +3008,41 @@ test("native acceptance live verdict forwards the payload and maps upstream outc
   );
   const malformed = await liveVerdict(live, payload, respond(200, { verdict: "ok" }));
   assert.equal(malformed.outcome, "invalid_response");
+  const unreadableBodies = [
+    '{"prediction":"MALICIOUS"',
+    new ReadableStream({
+      start: (controller) => controller.error(new Error("body read aborted")),
+    }),
+  ];
+  for (const body of unreadableBodies) {
+    const unreadable = await liveVerdict(
+      live,
+      payload,
+      async () => new Response(body, { status: 200 }),
+    );
+    assert.deepEqual(unreadable, {
+      outcome: "invalid_response",
+      decision: null,
+      status: 502,
+      body: {},
+      httpStatus: 200,
+    });
+  }
+  const overridden = await liveVerdict(
+    live,
+    payload,
+    respond(200, {
+      prediction: "MALICIOUS",
+      mode: null,
+      governance: { action: "allow" },
+    }),
+  );
+  assert.equal(overridden.decision, "block");
+  assert.deepEqual(overridden.upstream, {
+    prediction: "MALICIOUS",
+    mode: null,
+    action: "allow",
+  });
   const unreachable = await liveVerdict(live, payload, async () => {
     throw new TypeError("fetch failed");
   });
@@ -2896,21 +3061,30 @@ test("native acceptance classifier proxies live requests and records duration an
       }),
   });
   try {
-    const post = (headers) =>
+    const authenticated = { "x-api-key": "native-acceptance-loopback-key" };
+    const post = (
+      headers,
+      body = JSON.stringify({
+        hook: "tool_response",
+        tool_name: "read",
+        text: stage.plan.poison,
+      }),
+    ) =>
       fetch(classifier.url, {
         method: "POST",
         headers: { "content-type": "application/json", ...headers },
-        body: JSON.stringify({
-          hook: "tool_response",
-          tool_name: "read",
-          text: stage.plan.poison,
-        }),
+        body,
       });
     const unauthenticated = await post({});
     assert.equal(unauthenticated.status, 404);
     assert.equal(classifier.requests.length, 0);
 
-    const response = await post({ "x-api-key": "native-acceptance-loopback-key" });
+    await assert.rejects(post(authenticated, '{"hook":'));
+    assert.equal(classifier.requests.length, 0);
+    assert.equal(classifier.failures.length, 1);
+    assert.equal(classifier.failures[0].name, "SyntaxError");
+
+    const response = await post(authenticated);
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { prediction: "MALICIOUS", mode: "shadow" });
     assert.equal(classifier.requests.length, 1);

@@ -180,7 +180,7 @@ export async function liveVerdict(live, payload, fetchImpl) {
   }).catch(() => undefined);
   if (!response) return failed("transport_error");
   if (!response.ok) return failed("http_error", { httpStatus: response.status });
-  const body = await response.json();
+  const body = await response.json().catch(() => undefined);
   if (!["BENIGN", "MALICIOUS"].includes(body?.prediction)) {
     return failed("invalid_response", { httpStatus: response.status });
   }
@@ -238,7 +238,6 @@ export function modelVisibleToolOutputs(modelRequests) {
 
 const SCENARIO_CHECKS = {
   allow: (plan, evidence, outputs, decided) => ({
-    host_exit_zero: evidence.host.exitCode === 0,
     effect_file_matches: evidence.effectText === plan.effectText,
     tool_calls_allowed: decided("tool_call", "allow") === plan.calls.length,
     tool_responses_allowed:
@@ -280,20 +279,23 @@ export function evaluateScenario(plan, evidence, live) {
     evidence.classifierRequests.filter(
       (request) => request.hook === hook && request.decision === decision,
     ).length;
-  const checks = SCENARIO_CHECKS[plan.id](
-    plan,
-    evidence,
-    modelVisibleToolOutputs(evidence.modelRequests),
-    decided,
-  );
+  const checks = {
+    host_exit_zero: evidence.host.exitCode === 0,
+    host_within_deadline: evidence.host.timedOut === false,
+    ...SCENARIO_CHECKS[plan.id](
+      plan,
+      evidence,
+      modelVisibleToolOutputs(evidence.modelRequests),
+      decided,
+    ),
+  };
+  const blocker = live
+    ? liveBlocker(plan.id, evidence.classifierRequests)
+    : undefined;
   const passed = Object.values(checks).every(Boolean);
-  const blocker =
-    passed || !live
-      ? undefined
-      : liveBlocker(plan.id, evidence.classifierRequests);
   return {
     id: plan.id,
-    status: passed ? "PASS" : blocker ? "BLOCKED" : "FAIL",
+    status: blocker ? "BLOCKED" : passed ? "PASS" : "FAIL",
     ...(blocker ? { blocker } : {}),
     ...(plan.effectFile
       ? { effect_present: evidence.effectText !== undefined }
@@ -453,13 +455,20 @@ async function readBody(request) {
 }
 
 async function listenLoopback(handler) {
-  const server = createServer(handler);
+  const failures = [];
+  const server = createServer((request, response) =>
+    handler(request, response).catch((error) => {
+      failures.push(error);
+      response.destroy();
+    }),
+  );
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
   });
   return {
     origin: `http://127.0.0.1:${server.address().port}`,
+    failures,
     close: () =>
       new Promise((resolve) => {
         server.closeAllConnections();
@@ -733,6 +742,11 @@ async function runScenario(context, plan) {
     },
     context.children,
   );
+  const [loopbackFailure] = [
+    ...context.model.failures,
+    ...context.classifier.failures,
+  ];
+  if (loopbackFailure) throw loopbackFailure;
   const effectPath = plan.effectFile && path.join(workspace, plan.effectFile);
   const inScenario = (records) =>
     records.filter((record) => record.scenario === plan.id);
@@ -752,7 +766,9 @@ async function runScenario(context, plan) {
     context.live,
   );
   if (result.status !== "PASS") {
-    console.error(`${plan.id}: host exit ${host.exitCode}\n${host.stderr}`);
+    console.error(
+      `${plan.id}: host exit ${host.exitCode} signal ${host.signal} timed out ${host.timedOut}\n${host.stderr}`,
+    );
   }
   return result;
 }
@@ -777,16 +793,16 @@ async function main() {
   };
   const context = { stage: {}, children: new Set() };
   try {
-    context.host = HOST_GENERATIONS[values.generation];
-    assert(context.host, `unknown OpenCode generation ${values.generation}`);
-    context.live = resolveLiveClassifier(process.env);
-    const plans = scenarioPlans(context.host, state.live);
-    state.expectedScenarioIds = plans.map((plan) => plan.id);
     state.sourceSha =
       process.env.GITHUB_SHA ??
       (
         await execute("git", ["rev-parse", "HEAD"], { cwd: repoRoot })
       ).stdout.trim();
+    context.host = HOST_GENERATIONS[values.generation];
+    assert(context.host, `unknown OpenCode generation ${values.generation}`);
+    const plans = scenarioPlans(context.host, state.live);
+    state.expectedScenarioIds = plans.map((plan) => plan.id);
+    context.live = resolveLiveClassifier(process.env);
     context.root = await realpath(
       await mkdtemp(path.join(tmpdir(), "opencode-firewall-acceptance-")),
     );
