@@ -39,6 +39,7 @@
     "test:unit": "node scripts/run-unit-tests.mjs",
     "test:hosts": "bun scripts/run-v1-contract-qualification.mjs && bun scripts/run-host-qualification.mjs",
     "qualify:native": "node scripts/run-native-tui-qualification.mjs",
+    "acceptance:native": "node scripts/run-native-acceptance.mjs",
     "pack:dry": "npm pack --dry-run",
     "prepublishOnly": "node scripts/block-publish.mjs"
   },

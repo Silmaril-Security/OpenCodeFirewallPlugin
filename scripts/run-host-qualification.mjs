@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { Host } from "@opencode/plugin/host";
 import { PluginPromise } from "@opencode/core/plugin/promise";
@@ -12,8 +10,12 @@ import { Tool } from "@opencode/core/tool";
 import { Permission } from "@opencode/core/permission";
 import { LayerNode } from "@opencode/util/effect/layer-node";
 import { Effect, Exit, Layer, Schema, Stream } from "effect";
+import {
+  execute,
+  installPackedPlugin,
+  packPlugin,
+} from "./qualification-harness.mjs";
 
-const execute = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const qualificationRoot = await mkdtemp(path.join(repoRoot, ".host-qualification-"));
 const packRoot = path.join(qualificationRoot, "pack");
@@ -44,15 +46,10 @@ try {
     { cwd: qualificationRoot, env: hostEnv },
   );
   assert.equal(newVersion.stdout.trim(), "opencode v2.2.6");
-  const packed = await execute("npm", [
-    "pack",
-    "--json",
-    "--pack-destination",
-    packRoot,
-  ], { cwd: repoRoot });
-  const packResult = JSON.parse(packed.stdout);
-  assert.equal(packResult.length, 1);
-  const packedPaths = new Set(packResult[0].files.map(({ path: file }) => file));
+  const packed = await packPlugin(repoRoot, packRoot);
+  const packedPaths = new Set(
+    packed.manifest.files.map(({ path: file }) => file),
+  );
   for (const required of [
     "dist/index.js",
     "dist/server.js",
@@ -64,26 +61,7 @@ try {
   ]) {
     assert.equal(packedPaths.has(required), true, `packed payload missing ${required}`);
   }
-  const tarball = path.join(packRoot, packResult[0].filename);
-  await writeFile(
-    path.join(consumerRoot, "package.json"),
-    JSON.stringify({ name: "opencode-firewall-host-qualification", private: true }),
-  );
-  await execute("npm", [
-    "install",
-    "--ignore-scripts",
-    "--no-package-lock",
-    "--no-audit",
-    "--no-fund",
-    tarball,
-  ], { cwd: consumerRoot });
-
-  const packageDirectory = path.join(
-    consumerRoot,
-    "node_modules",
-    "@silmaril",
-    "opencode-firewall-plugin",
-  );
+  const packageDirectory = await installPackedPlugin(packed, consumerRoot);
   const entries = Host.resolve({ directory: packageDirectory });
   assert.ok(entries.server?.endsWith("/dist/server.js"), entries.server);
   assert.ok(entries.tui?.endsWith("/dist/tui.js"), entries.tui);
