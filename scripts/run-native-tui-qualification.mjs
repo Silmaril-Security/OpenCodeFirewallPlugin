@@ -13,6 +13,7 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn as spawnPty } from "@lydell/node-pty";
+import { makeEnvironment } from "./qualification-harness.mjs";
 
 const EXPECTED_VERSION = "opencode v2.2.6";
 const COMMAND_TITLE = "Silmaril Firewall";
@@ -508,34 +509,6 @@ function buildCurrentDistribution() {
     exitCode: result.status,
     stdout: result.stdout,
     stderr: result.stderr,
-  };
-}
-
-async function makeEnvironment(root) {
-  const home = path.join(root, "home");
-  const directories = {
-    HOME: home,
-    XDG_CONFIG_HOME: path.join(root, "xdg", "config"),
-    XDG_CACHE_HOME: path.join(root, "xdg", "cache"),
-    XDG_DATA_HOME: path.join(root, "xdg", "data"),
-    XDG_STATE_HOME: path.join(root, "xdg", "state"),
-    TMPDIR: path.join(root, "tmp"),
-  };
-  await Promise.all(
-    Object.values(directories).map((directory) =>
-      mkdir(directory, { recursive: true, mode: 0o700 }),
-    ),
-  );
-  return {
-    values: {
-      ...directories,
-      PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
-      SHELL: "/bin/sh",
-      TERM: "xterm-256color",
-      COLORTERM: "truecolor",
-      LANG: "en_US.UTF-8",
-      LC_ALL: "en_US.UTF-8",
-    },
   };
 }
 
