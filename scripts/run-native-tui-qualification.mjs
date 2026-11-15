@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   realpath,
+  readFile,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -33,6 +34,9 @@ const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
+
+// Load metadata before native work so lookup errors cannot hide its final summary.
+const packageVersion = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8")).version;
 
 async function main(args) {
   const outputDirectory = parseOutput(args);
@@ -151,7 +155,7 @@ async function main(args) {
         schema: "silmaril.opencode-native-tui-qualification.v1",
         createdAt: new Date().toISOString(),
         repository: repoRoot,
-        packageVersion: JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8")).version,
+        packageVersion,
         cli: {
           path: path.join(
             repoRoot,
