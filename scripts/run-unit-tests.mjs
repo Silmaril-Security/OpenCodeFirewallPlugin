@@ -2494,10 +2494,11 @@ test("unavailable process observation cannot verify cleanup or pass a session", 
 
 test("source and dependency invariants: exact host and native PTY pins, SDK 0.8.2, and blocked publication", async () => {
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.4.9");
+  const versionSource = await readFile(path.join(repoRoot, "src", "version.ts"), "utf8");
+  assert.equal(versionSource.match(/export const PLUGIN_VERSION = "([^"]+)";/)?.[1], packageJson.version);
   for (const file of ["index.ts", "v2.ts"]) {
     const runtimeSource = await readFile(path.join(repoRoot, "src", file), "utf8");
-    assert.equal(runtimeSource.match(/const PLUGIN_VERSION = "([^"]+)";/)?.[1], packageJson.version);
+    assert.match(runtimeSource, /import \{ PLUGIN_VERSION \} from "\.\/version\.js";/);
   }
   assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.8.2");
   assert.equal(packageJson.devDependencies["@lydell/node-pty"], "1.2.0-beta.12");

@@ -151,7 +151,7 @@ async function main(args) {
         schema: "silmaril.opencode-native-tui-qualification.v1",
         createdAt: new Date().toISOString(),
         repository: repoRoot,
-        packageVersion: "0.4.9",
+        packageVersion: JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8")).version,
         cli: {
           path: path.join(
             repoRoot,

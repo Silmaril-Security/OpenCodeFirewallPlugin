@@ -17,6 +17,9 @@ This repository is intended to be public, but it is not OSI-licensed yet. Until 
 
 ## Release Status
 
+Source candidate 0.4.10 centralizes runtime attribution and prepares the corrected
+version for the next immutable release. It has not been published.
+
 Version 0.4.9 is the current immutable
 [`v0.4.9` GitHub source release](https://github.com/Silmaril-Security/OpenCodeFirewallPlugin/releases/tag/v0.4.9).
 Its immutable Git ref `refs/tags/v0.4.9` resolves to source commit
