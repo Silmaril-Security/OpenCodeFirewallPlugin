@@ -17,25 +17,46 @@ This repository is intended to be public, but it is not OSI-licensed yet. Until 
 
 ## Release Status
 
-Version 0.4.9 is the current immutable
+Version 0.4.10 is prepared in the current source tree as the next source-release
+candidate. Its package metadata and both OpenCode runtime adapters report
+`0.4.10`. It has not been tagged or published as a GitHub release or npm
+package.
+
+Version 0.4.9 remains the latest published immutable
 [`v0.4.9` GitHub source release](https://github.com/Silmaril-Security/OpenCodeFirewallPlugin/releases/tag/v0.4.9).
 Its immutable Git ref `refs/tags/v0.4.9` resolves to source commit
 `3a8b2810f8300dd28e0ff1adffc7de81a0c14b30`.
-This is a source-only GitHub release. The package remains private and
-`UNLICENSED`, with npm publishing blocked.
+That release's V1 and V2 runtime constants report `0.4.8`; the tag and its
+archives remain unchanged. Do not retag `v0.4.9`. The prepared 0.4.10
+candidate carries the attribution correction in a new version.
 
-Check out and build that exact release:
+The published 0.4.9 release is source-only. The package remains private and
+`UNLICENSED`, with npm publishing blocked for every version.
+
+To reproduce the latest published release exactly:
 
 ```sh
 git clone https://github.com/Silmaril-Security/OpenCodeFirewallPlugin.git
 cd OpenCodeFirewallPlugin
 git checkout --detach refs/tags/v0.4.9
-npm ci
+npm ci --ignore-scripts
 npm run build
 ```
 
+This reproduces the known 0.4.9 runtime-attribution issue; it does not build
+the 0.4.10 candidate. Until `v0.4.10` is published, validate the candidate only
+from a reviewed commit or checkout of this source tree:
+
+```sh
+npm ci --ignore-scripts
+npm run typecheck
+npm run test:unit
+npm run build
+npm run pack:dry
+```
+
 Git source archives do not include the generated `dist` distribution, so they
-likewise require `npm ci` followed by `npm run build`.
+likewise require dependency installation followed by `npm run build`.
 
 ## Install
 

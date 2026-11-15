@@ -5,6 +5,7 @@ import {
   chmod,
   mkdir,
   mkdtemp,
+  readFile,
   realpath,
   rm,
   writeFile,
@@ -33,6 +34,9 @@ const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
+const packageVersion = JSON.parse(
+  await readFile(path.join(repoRoot, "package.json"), "utf8"),
+).version;
 
 async function main(args) {
   const outputDirectory = parseOutput(args);
@@ -151,7 +155,7 @@ async function main(args) {
         schema: "silmaril.opencode-native-tui-qualification.v1",
         createdAt: new Date().toISOString(),
         repository: repoRoot,
-        packageVersion: "0.4.9",
+        packageVersion,
         cli: {
           path: path.join(
             repoRoot,
