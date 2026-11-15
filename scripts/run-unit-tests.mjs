@@ -2492,13 +2492,37 @@ test("unavailable process observation cannot verify cleanup or pass a session", 
   );
 });
 
-test("source and dependency invariants: exact host and native PTY pins, SDK 0.8.2, and blocked publication", async () => {
+test("release version is consistent across package metadata and V1/V2 runtime attribution", async () => {
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
-  assert.equal(packageJson.version, "0.4.9");
+  const packageLock = JSON.parse(await readFile(path.join(repoRoot, "package-lock.json"), "utf8"));
+  const versionSource = await readFile(path.join(repoRoot, "src", "version.ts"), "utf8");
+  assert.equal(packageJson.version, "0.4.10");
+  assert.equal(packageLock.version, packageJson.version);
+  assert.equal(packageLock.packages[""].version, packageJson.version);
+  assert.equal(
+    versionSource.match(/PLUGIN_VERSION = "([^"]+)"/)?.[1],
+    packageJson.version,
+  );
   for (const file of ["index.ts", "v2.ts"]) {
     const runtimeSource = await readFile(path.join(repoRoot, "src", file), "utf8");
-    assert.equal(runtimeSource.match(/const PLUGIN_VERSION = "([^"]+)";/)?.[1], packageJson.version);
+    assert.match(runtimeSource, /import \{ PLUGIN_VERSION \} from "\.\/version\.js";/);
   }
+  assert.equal(
+    t.buildMetadata(mockInput(), "version.consistency", {}).silmaril.version,
+    packageJson.version,
+  );
+  assert.equal(
+    v2mod.__testInternals.buildMetadata(
+      mockV2Context().context,
+      "version.consistency",
+      {},
+    ).silmaril.version,
+    packageJson.version,
+  );
+});
+
+test("source and dependency invariants: exact host and native PTY pins, SDK 0.8.2, and blocked publication", async () => {
+  const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
   assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.8.2");
   assert.equal(packageJson.devDependencies["@lydell/node-pty"], "1.2.0-beta.12");
   assert.equal(packageJson.devDependencies["@opencode-ai/plugin"], "1.19.5");

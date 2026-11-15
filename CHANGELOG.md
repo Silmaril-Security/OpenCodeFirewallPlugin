@@ -1,9 +1,25 @@
 # Release notes
 
+## 0.4.10 (prepared 2026-11-15)
+
+Version 0.4.10 is the prepared next source-release candidate. It is not yet a
+Git tag, GitHub release, or npm publication.
+
+The package version, lockfile, OpenCode 1 classification metadata, OpenCode 2
+classification metadata, and local evidence now share the 0.4.10 runtime
+version binding. Unit coverage verifies that package and lock metadata match
+the shared runtime value and that both adapters emit it.
+
+The latest published source release remains immutable `v0.4.9` at
+`3a8b2810f8300dd28e0ff1adffc7de81a0c14b30`. Its V1 and V2 runtime constants
+report `0.4.8`. This candidate prepares the correction as a new version without
+retagging or modifying `v0.4.9`. The package remains private and `UNLICENSED`,
+and npm publication remains blocked.
+
 ## 0.4.9 (2026-11-09)
 
 [`v0.4.9`](https://github.com/Silmaril-Security/OpenCodeFirewallPlugin/releases/tag/v0.4.9)
-is the current immutable GitHub source release. Its immutable Git ref
+is the latest published immutable GitHub source release. Its immutable Git ref
 `refs/tags/v0.4.9` resolves to source commit
 `3a8b2810f8300dd28e0ff1adffc7de81a0c14b30`.
 

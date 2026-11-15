@@ -18,9 +18,9 @@ import {
   resolveLocalEventDirectory,
   type LocalProtectionEventInput,
 } from "./local-evidence.js";
+import { PLUGIN_VERSION } from "./version.js";
 
 const PLUGIN_ID = "opencode-firewall-plugin";
-const PLUGIN_VERSION = "0.4.9";
 const DEFAULT_CLASSIFY_TIMEOUT_MS = 2500;
 const MIN_CLASSIFY_TIMEOUT_MS = 250;
 const MAX_CLASSIFY_TIMEOUT_MS = 10000;
