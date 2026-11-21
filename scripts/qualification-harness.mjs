@@ -17,6 +17,7 @@ export const INSTALL_ARGUMENTS = [
 export async function packPlugin(repoRoot, packRoot) {
   const packed = await execute("npm", [
     "pack",
+    "--ignore-scripts",
     "--json",
     "--pack-destination",
     packRoot,

@@ -12,9 +12,12 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, cp, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const reviewedRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const PACKAGE_NAME = "@silmaril/opencode-firewall-plugin";
 const GENERATIONS = [1, 2];
@@ -103,6 +106,29 @@ async function stage(env, privateRoot) {
   return source;
 }
 
+async function preparePackage(source, root, env) {
+  const hasRuntime = async (directory) => {
+    const manifest = JSON.parse(await readFile(path.join(directory, "package.json"), "utf8"));
+    const files = [manifest.main, ...Object.values(manifest.exports ?? {}).map((entry) => entry.import)];
+    if (!files.length || files.some((file) => typeof file !== "string" || !file.startsWith("./dist/") || file.includes(".."))) return false;
+    return (await Promise.all(files.map((file) => realpath(path.join(directory, file)).catch(() => undefined))))
+      .every((file) => file?.startsWith(path.join(directory, "dist") + path.sep));
+  };
+  if (await hasRuntime(source)) return source;
+  // The published v0.4.9 customer installation builds TypeScript from this source tag.
+  if (env.CUSTOMER_VERSION !== "0.4.9" || env.CUSTOMER_SOURCE_SHA !== "3a8b2810f8300dd28e0ff1adffc7de81a0c14b30") {
+    throw new Stop("frozen package is missing its declared runtime exports", "FAIL");
+  }
+  const consumer = path.join(root, "historical-build");
+  await cp(source, consumer, { recursive: true });
+  const options = { cwd: consumer, env: childEnvironment(root, {}) };
+  const dependencies = await run("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], options);
+  if (dependencies.code !== 0) throw new Stop("historical lockfile dependencies unavailable", "BLOCKED");
+  const compilation = await run(process.execPath, ["node_modules/typescript/bin/tsc", "-p", "tsconfig.json"], options);
+  if (compilation.code !== 0 || !await hasRuntime(consumer)) throw new Stop("documented historical source installation failed", "FAIL");
+  return consumer;
+}
+
 function childEnvironment(privateRoot, extra) {
   const home = path.join(privateRoot, "home");
   return {
@@ -114,9 +140,9 @@ function childEnvironment(privateRoot, extra) {
   };
 }
 
-// Run the existing native harness shipped in the archive and keep only the
+// Run the reviewed native harness against the staged customer package and keep only the
 // facts needed to report a status.
-async function harness(source, privateRoot, generation, live, env) {
+async function harness(source, privateRoot, hostRoot, generation, live, env) {
   const receiptPath = path.join(privateRoot, `${live ? "live" : "loopback"}-${generation}.json`);
   const credentials = live
     ? {
@@ -127,11 +153,14 @@ async function harness(source, privateRoot, generation, live, env) {
     : {};
   const finished = await run(
     process.execPath,
-    ["scripts/run-native-acceptance.mjs", "--generation", String(generation)],
+    [path.join(reviewedRoot, "scripts/run-native-acceptance.mjs"), "--generation", String(generation)],
     {
       cwd: source,
       env: childEnvironment(privateRoot, {
         ...credentials,
+        CUSTOMER_RELEASE_BENIGN_LIVE: "1",
+        NATIVE_ACCEPTANCE_PACKAGE_ROOT: source,
+        NATIVE_ACCEPTANCE_HOST_ROOT: hostRoot,
         GITHUB_SHA: env.CUSTOMER_SOURCE_SHA,
         NATIVE_ACCEPTANCE_RECEIPT: receiptPath,
       }),
@@ -169,16 +198,21 @@ async function main() {
   await publish();
   const privateRoot = await realpath(await mkdtemp(path.join(tmpdir(), "opencode-customer-")));
   try {
-    const source = await stage(process.env, privateRoot).catch((error) => {
+    const env = process.env;
+    const source = await stage(env, privateRoot).then((archive) => preparePackage(archive, privateRoot, env)).catch((error) => {
       if (!(error instanceof Stop)) throw error;
       console.error(error.message);
       status.install = error.install;
       return undefined;
     });
     if (!source) return;
-    const env = process.env;
+    const hostRoot = path.join(privateRoot, "native-host");
+    await mkdir(hostRoot);
+    for (const name of ["package.json", "package-lock.json"]) {
+      await copyFile(path.join(reviewedRoot, name), path.join(hostRoot, name));
+    }
     const bootstrap = await run("npm", ["ci", "--no-audit", "--no-fund"], {
-      cwd: source,
+      cwd: hostRoot,
       env: childEnvironment(privateRoot, {}),
     });
     if (bootstrap.code !== 0) {
@@ -194,7 +228,7 @@ async function main() {
 
     const loopback = [];
     for (const generation of GENERATIONS) {
-      loopback.push(await harness(source, privateRoot, generation, false, env));
+      loopback.push(await harness(source, privateRoot, hostRoot, generation, false, env));
     }
     status.install = loopback.every(({ plugin }) => plugin) ? "PASS" : "FAIL";
     status.native = combine(loopback);
@@ -206,7 +240,7 @@ async function main() {
     }
     const live = [];
     for (const generation of GENERATIONS) {
-      live.push(await harness(source, privateRoot, generation, true, env));
+      live.push(await harness(source, privateRoot, hostRoot, generation, true, env));
     }
     status.live = combine(live);
   } catch (error) {

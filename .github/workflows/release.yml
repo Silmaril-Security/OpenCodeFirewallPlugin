@@ -68,7 +68,14 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Archive the release commit
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Compile the customer runtime from locked dependencies
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+      - name: Freeze the release commit and customer runtime
         id: package
         env:
           VERSION: ${{ needs.plan.outputs.version }}
@@ -76,7 +83,7 @@ jobs:
           set -euo pipefail
           echo "candidate_name=candidate-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
           filename="OpenCodeFirewallPlugin-$VERSION.tar.gz"
-          git archive --format=tar.gz --prefix=source/ --output="$RUNNER_TEMP/$filename" "$GITHUB_SHA"
+          python3 scripts/archive-customer-release.py "$GITHUB_SHA" "$RUNNER_TEMP/$filename"
           digest=$(sha256sum "$RUNNER_TEMP/$filename" | cut -d' ' -f1)
           echo "filename=$filename" >> "$GITHUB_OUTPUT"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
@@ -118,7 +125,7 @@ jobs:
         id: framework
         with:
           repository: Silmaril-Security/SilmarilCustomerTests
-          ref: 5e55f0c052d8c2858689e2b74fb6a2a90159051f
+          ref: aed6633e11b1666bed512bd7b5297448f2db1abc
           token: ${{ steps.reader.outputs.token }}
           path: _customer
           persist-credentials: false
