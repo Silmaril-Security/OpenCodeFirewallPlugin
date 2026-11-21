@@ -2959,6 +2959,37 @@ test("native acceptance writes a failing live receipt when the classifier key is
   assert.match(receipt.error.message, /CUSTOMER_NATIVE_API_KEY/u);
 });
 
+test("customer acceptance driver never passes a mismatched or malformed artifact", async () => {
+  const driver = path.join(repoRoot, "scripts", "customer-published-acceptance");
+  assert.ok((await stat(driver)).mode & 0o111, "driver must be executable");
+  const root = await mkdtemp(path.join(outDir, "customer-driver-"));
+  const artifact = path.join(root, "OpenCodeFirewallPlugin-0.0.0.tar.gz");
+  await writeFile(artifact, "not an archive");
+  const identity = {
+    CUSTOMER_ARTIFACT: artifact,
+    CUSTOMER_VERSION: packageVersion,
+    CUSTOMER_SOURCE_SHA: "0123456789abcdef0123456789abcdef01234567",
+    CUSTOMER_ARTIFACT_SHA256: "0".repeat(64),
+  };
+  for (const [name, override] of [
+    ["digest", {}],
+    ["version", { CUSTOMER_VERSION: "latest" }],
+  ]) {
+    const result = path.join(root, `${name}.json`);
+    await assert.rejects(
+      execute(driver, [], {
+        env: { PATH: process.env.PATH, ...identity, ...override, CUSTOMER_RESULT: result },
+      }),
+      { code: 1 },
+    );
+    assert.deepEqual(JSON.parse(await readFile(result, "utf8")), {
+      install: "FAIL",
+      native: "BLOCKED",
+      live: "BLOCKED",
+    });
+  }
+});
+
 test("native acceptance live mode requires an https endpoint and a key", () => {
   assert.equal(resolveLiveClassifier({}), undefined);
   assert.equal(resolveLiveClassifier({ CUSTOMER_NATIVE_CLASSIFIER: "loopback" }), undefined);
