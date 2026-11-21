@@ -6,9 +6,8 @@
 // CUSTOMER_ARTIFACT_SHA256, CUSTOMER_RESULT and CUSTOMER_ARCHIVE_HELPER.
 // CUSTOMER_RESULT receives only {"install","native","live"} status strings
 // (PASS, FAIL or BLOCKED). Detailed harness output stays in a private
-// temporary directory that is removed on exit. Nothing here installs from npm
-// as a distribution: the archive is source-only and the host bootstrap is the
-// lockfile-pinned `npm ci`.
+// temporary directory that is removed on exit. Current archives carry the built
+// runtime. Historical source distributions follow their documented locked build.
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
@@ -40,13 +39,13 @@ async function publish() {
   await rename(temporary, resultPath);
 }
 
-function run(command, args, { cwd, env, stdin } = {}) {
+function run(command, args, { cwd, env } = {}) {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd,
       env,
       timeout: STEP_TIMEOUT_MS,
-      stdio: [stdin ?? "ignore", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "pipe"],
     });
     const out = [];
     child.stdout.on("data", (chunk) => out.push(chunk));
@@ -87,7 +86,11 @@ async function stage(env, privateRoot) {
   if (actual !== env.CUSTOMER_ARTIFACT_SHA256) throw new Stop("artifact digest mismatch", "FAIL");
 
   // git archive records its commit in the tar header when produced by git.
-  const archived = await run("sh", ["-c", 'gzip -dc "$1" | git get-tar-commit-id', "sh", artifact]);
+  const archived = await run("python3", [
+    "-I", "-c",
+    "import sys,tarfile\nwith tarfile.open(sys.argv[1], 'r|gz') as archive:\n print(archive.pax_headers.get('comment', ''))",
+    artifact,
+  ]);
   const archivedSha = archived.stdout.trim();
   if (archived.code !== 0 || archivedSha !== sourceSha) {
     throw new Stop("archive commit differs from the supplied source SHA", "FAIL");
