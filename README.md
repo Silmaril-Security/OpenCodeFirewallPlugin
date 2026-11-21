@@ -30,6 +30,8 @@ That release's V1 and V2 runtime constants report `0.4.8`; the tag and its
 archives remain unchanged. Do not retag `v0.4.9`. The prepared 0.4.10
 candidate carries the attribution correction in a new version.
 
+Future named GitHub release assets (`OpenCodeFirewallPlugin-<version>.tar.gz`) include the compiled `dist/` entries from the release build. Extract the asset and use its `source/` package directly for installation. The release gate installs and compares those runtime bytes on both host generations. GitHub’s automatic source snapshots continue to contain only tracked files.
+
 The published 0.4.9 release is source-only. The package remains private and
 `UNLICENSED`, with npm publishing blocked for every version.
 

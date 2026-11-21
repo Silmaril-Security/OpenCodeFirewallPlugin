@@ -70,6 +70,8 @@ const repoRoot = path.resolve(
   "..",
 );
 
+const hostRoot = process.env.NATIVE_ACCEPTANCE_HOST_ROOT ?? repoRoot;
+
 export function scenarioPlans(host, live) {
   const text = live ? LIVE_TEXT : LOOPBACK_TEXT;
   const write = (id, file, content) => ({
@@ -611,7 +613,7 @@ function runHost(binary, args, options, children) {
 }
 
 async function verifiedHost(generation, host, root) {
-  const packageRoot = path.join(repoRoot, "node_modules", host.package);
+  const packageRoot = path.join(hostRoot, "node_modules", host.package);
   const manifest = await readJson(path.join(packageRoot, "package.json"));
   const [command, relativeBinary] = Object.entries(manifest.bin)[0];
   const binary = path.join(packageRoot, relativeBinary);
@@ -619,7 +621,7 @@ async function verifiedHost(generation, host, root) {
     .map((name) => [
       name,
       path.join(
-        repoRoot,
+        hostRoot,
         "node_modules",
         name,
         "bin",
@@ -628,12 +630,12 @@ async function verifiedHost(generation, host, root) {
     ])
     .filter(([, file]) => existsSync(file));
   const binaryDigest = await sha256File(binary);
-  const pinnedVersion = (await readJson(path.join(repoRoot, "package.json")))
+  const pinnedVersion = (await readJson(path.join(hostRoot, "package.json")))
     .devDependencies[host.package];
   const platformPackage = pinnedPlatformPackage({
     hostPackage: host.package,
     pinnedVersion,
-    lockPackages: (await readJson(path.join(repoRoot, "package-lock.json")))
+    lockPackages: (await readJson(path.join(hostRoot, "package-lock.json")))
       .packages,
     binaryDigest,
     platformDigests: Object.fromEntries(
@@ -675,11 +677,12 @@ async function installedPlugin(host, root) {
   await Promise.all(
     [packRoot, extractRoot, consumerRoot].map((directory) => mkdir(directory)),
   );
-  await execute("npm", ["run", "build"], { cwd: repoRoot });
-  const packed = await packPlugin(repoRoot, packRoot);
+  const supplied = process.env.NATIVE_ACCEPTANCE_PACKAGE_ROOT;
+  if (!supplied) await execute("npm", ["run", "build"], { cwd: repoRoot });
+  const packed = await packPlugin(supplied ?? repoRoot, packRoot);
   const peers = await Promise.all(
     host.peers.map(async (name) => {
-      const directory = path.join(repoRoot, "node_modules", name);
+      const directory = path.join(hostRoot, "node_modules", name);
       const { version } = await readJson(path.join(directory, "package.json"));
       return { directory, spec: `${name}@${version}` };
     }),
@@ -693,6 +696,9 @@ async function installedPlugin(host, root) {
   const artifactDigests = await directoryDigests(
     path.join(extractRoot, "package"),
   );
+  const matchingRuntime = !supplied || isDeepStrictEqual(
+    await directoryDigests(path.join(supplied, "dist")), await directoryDigests(path.join(directory, "dist")),
+  );
   return {
     directory,
     receipt: {
@@ -700,7 +706,7 @@ async function installedPlugin(host, root) {
       version: packed.manifest.version,
       artifact_sha256: await sha256File(packed.tarball),
       installed_bytes_match:
-        Object.keys(artifactDigests).length > 0 &&
+        matchingRuntime && Object.keys(artifactDigests).length > 0 &&
         isDeepStrictEqual(artifactDigests, await directoryDigests(directory)),
       install_command: [
         `npm ${INSTALL_ARGUMENTS.join(" ")} ${packed.manifest.filename}`,
@@ -800,7 +806,9 @@ async function main() {
       ).stdout.trim();
     context.host = HOST_GENERATIONS[values.generation];
     assert(context.host, `unknown OpenCode generation ${values.generation}`);
-    const plans = scenarioPlans(context.host, state.live);
+    const available = scenarioPlans(context.host, state.live);
+    const plans = state.live && process.env.CUSTOMER_RELEASE_BENIGN_LIVE === "1"
+      ? available.filter((scenario) => scenario.id === "allow") : available;
     state.expectedScenarioIds = plans.map((plan) => plan.id);
     context.live = resolveLiveClassifier(process.env);
     context.root = await realpath(
