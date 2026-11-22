@@ -17,7 +17,11 @@ recorded prediction.
 Local evidence records the decision's `confidence` and `severity` when the
 Firewall reports a value the receipt schema knows, and no longer writes
 `modelScore` or `modelThreshold`. The event schema version and every other
-field are unchanged. Debug diagnostics report `action`, `source`,
+field are unchanged. `provenance.modelVersion` now carries the decision's
+model identifier and `provenance.policyVersion` the governance decision's
+policy version, keeping `opencode-plugin-policy-v1` for decisions without
+governance; both are stripped of control and format characters and cut to 128
+UTF-8 bytes. Debug diagnostics report `action`, `source`,
 `confidence`, `severity`, and `outcome` in place of `prediction`, `score`,
 `threshold`, and `primaryOutcome`.
 

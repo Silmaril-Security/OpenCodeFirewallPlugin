@@ -218,8 +218,13 @@ request and session fingerprints, the policy decision, native host action, and
 version provenance. When the Firewall reports them, the decision's
 `confidence` (`very_low`, `low`, `medium`, `high`, `very_high`) and `severity`
 (`minimal`, `low`, `moderate`, `high`, `critical`) are recorded; `modelScore`
-and `modelThreshold` are no longer written. They never contain the prompt, tool
-arguments, tool output, assistant text, API key, or classifier URL.
+and `modelThreshold` are no longer written. `provenance.modelVersion` records
+the decision's model identifier when the Firewall reports one, and
+`provenance.policyVersion` records the governance decision's policy version,
+or `opencode-plugin-policy-v1` when the decision carries no governance. Both
+are stripped of control and format characters and cut to 128 UTF-8 bytes.
+Events never contain the prompt, tool arguments, tool output, assistant text,
+API key, or classifier URL.
 
 Set `SILMARIL_LOCAL_EVENT_DIR` to override the incoming directory. If that is unset or blank and `SILMARIL_EVIDENCE_ROOT` is set, the directory is `<root>/incoming`.
 Evidence failures are fail-open and never alter OpenCode enforcement. Plugins
