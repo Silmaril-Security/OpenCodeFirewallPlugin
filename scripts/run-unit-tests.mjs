@@ -37,7 +37,7 @@ import {
   HOST_GENERATIONS,
   hostConfig,
   liveBlocker,
-  liveVerdict,
+  liveVerdict as relayLiveVerdict,
   loopbackVerdict,
   pinnedPlatformPackage,
   receiptStatus,
@@ -46,6 +46,9 @@ import {
   scenarioPlans,
   scriptedReply,
   startClassifier,
+  upstreamRoute,
+  V1_ROUTE,
+  V2_ROUTE,
 } from "./run-native-acceptance.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -88,7 +91,7 @@ await build({
                 const handler = globalThis.__silmarilFirewallClassify;
                 return handler
                   ? await handler(text, options)
-                  : { prediction: "BENIGN", score: 0.01, threshold: 0.5, mode: this.options.mode ?? "shadow" };
+                  : { action: "allow", mode: this.options.mode ?? "shadow" };
               }
             }
           `,
@@ -151,7 +154,7 @@ await build({
                 const handler = globalThis.__silmarilFirewallClassify;
                 return handler
                   ? await handler(text, options)
-                  : { prediction: "BENIGN", score: 0.01, threshold: 0.5, mode: this.options.mode ?? "shadow" };
+                  : { action: "allow", mode: this.options.mode ?? "shadow" };
               }
             }
           `,
@@ -435,99 +438,247 @@ test("config: omitted mode is backend-controlled and legacy block_malicious stil
 
 test("effective mode keeps an explicit non-blocking override authoritative", () => {
   assert.equal(
-    t.effectiveMode({ prediction: "MALICIOUS", mode: "block" }, pluginOptions({ mode: "shadow" }), {}),
+    t.effectiveMode({ action: "block", mode: "block" }, pluginOptions({ mode: "shadow" }), {}),
     "shadow",
   );
-  assert.equal(t.effectiveMode({ prediction: "MALICIOUS" }, pluginOptions(), {}), "shadow");
+  assert.equal(t.effectiveMode({ action: "block" }, pluginOptions(), {}), "shadow");
 });
 
-test("SDK 0.8.2 preserves backend-selected Warn and Block modes when local mode is omitted", async () => {
-  const originalFetch = globalThis.fetch;
-  const requestBodies = [];
-  let backendMode = "warn";
-  globalThis.fetch = async (_input, init) => {
-    requestBodies.push(JSON.parse(String(init?.body)));
-    return new Response(JSON.stringify({
-      prediction: "MALICIOUS",
-      score: 0.99,
-      threshold: 0.5,
-      mode: backendMode,
-    }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
+const CLASSIFIER_ORIGIN = "https://alpha.example";
+const ATTACK_TEXT = "synthetic attack";
+const GOVERNED_TEXT = "synthetic governed action";
+const GOVERNANCE_WIRE = {
+  action: "block",
+  rule_id: "synthetic-rule",
+  policy_version: "synthetic-policy",
+};
+
+function classifierDecision(text) {
+  return text.includes(GOVERNED_TEXT) ? "governance" : text.includes(ATTACK_TEXT) ? "model" : undefined;
+}
+
+function version2Body(text) {
+  const source = classifierDecision(text);
+  return {
+    results: [{
+      action: source ? "block" : "allow",
+      source: source ?? null,
+      confidence: source === "model" ? "very_high" : null,
+      severity: source === "model" ? "critical" : null,
+      outcome: source === "model" ? "secret_exposure" : null,
+      governance: source === "governance" ? GOVERNANCE_WIRE : null,
+      model_id: "synthetic-model",
+    }],
   };
+}
 
-  try {
-    const firewall = new RealFirewall({
-      apiKey: "test-key",
-      apiUrl: "https://alpha.example/classify",
-      timeoutMs: 1_000,
-    });
-    for (const expectedMode of ["warn", "block"]) {
-      backendMode = expectedMode;
-      const result = await firewall.classify("unsafe input", { hook: "user_input" });
-      assert.equal(result.mode, expectedMode);
-      assert.equal(t.effectiveMode(result, pluginOptions(), {}), expectedMode);
-    }
-    assert.equal(requestBodies.length, 2);
-    assert.equal(requestBodies.every((body) => !Object.hasOwn(body, "mode")), true);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("actual pinned SDK preserves a governance-only block response", async () => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(JSON.stringify({
-    prediction: "BENIGN",
-    score: 0.01,
+function version1Body(text, mode) {
+  const source = classifierDecision(text);
+  return {
+    prediction: source === "model" ? "MALICIOUS" : "BENIGN",
+    score: source === "model" ? 0.99 : 0.01,
     threshold: 0.5,
-    governance: {
-      action: "block",
-      rule_id: "synthetic-rule",
-      policy_version: "synthetic-policy",
-    },
-  }), {
-    status: 200,
-    headers: { "content-type": "application/json" },
-  });
+    primary_outcome: source === "model" ? "secret_exposure" : "benign",
+    outcome_scores: source === "model" ? { secret_exposure: 0.99 } : {},
+    ...(source === "governance" ? { governance: GOVERNANCE_WIRE } : {}),
+    ...(mode ? { mode } : {}),
+  };
+}
 
+const CLASSIFIER_DEPLOYMENTS = {
+  "version 2 route": {
+    routes: ["/v2/classify"],
+    respond: (pathname, text) => Response.json(
+      pathname === "/v2/classify" ? version2Body(text) : version1Body(text),
+    ),
+  },
+  "version 1 route only": {
+    routes: ["/v2/classify", "/classify"],
+    respond: (pathname, text) => pathname === "/classify"
+      ? Response.json(version1Body(text))
+      : Response.json({ message: "Not Found" }, { status: 404 }),
+  },
+  "version 2 route answering a version 1 body": {
+    routes: ["/v2/classify"],
+    respond: (_pathname, text) => Response.json(version1Body(text)),
+  },
+};
+
+async function withClassifierDeployment(respond, fn) {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (input, init) => {
+    const { pathname } = new URL(String(input));
+    const body = JSON.parse(String(init?.body));
+    requests.push({ pathname, body });
+    return respond(pathname, body.text);
+  };
   try {
-    const firewall = new RealFirewall({
-      apiKey: "test-key",
-      apiUrl: "https://alpha.example/classify",
-      timeoutMs: 1_000,
-    });
-    const result = await firewall.classify("synthetic input", { hook: "user_input" });
-    assert.equal(result.prediction, "BENIGN");
-    assert.deepEqual(result.governance, {
-      action: "block",
-      ruleId: "synthetic-rule",
-      policyVersion: "synthetic-policy",
-    });
-    assert.equal(t.shouldBlockClassification(result), true);
+    return await fn(requests);
   } finally {
     globalThis.fetch = originalFetch;
   }
+}
+
+function realFirewall(options = {}) {
+  return new RealFirewall({
+    apiKey: "test-key",
+    apiUrl: `${CLASSIFIER_ORIGIN}/classify`,
+    timeoutMs: 1_000,
+    ...options,
+  });
+}
+
+test("actual SDK 1.0.0 returns the decision on every classifier deployment generation", async () => {
+  for (const [name, deployment] of Object.entries(CLASSIFIER_DEPLOYMENTS)) {
+    await withClassifierDeployment(deployment.respond, async (requests) => {
+      const firewall = realFirewall();
+      const blocked = await firewall.classify(ATTACK_TEXT, { hook: "user_input" });
+      assert.equal(blocked.action, "block", name);
+      assert.equal(blocked.source, "model", name);
+      assert.equal(blocked.outcome, "secret_exposure", name);
+      assert.equal(t.shouldBlockClassification(blocked), true, name);
+      assert.deepEqual(
+        [blocked.confidence, blocked.severity],
+        name === "version 2 route" ? ["very_high", "critical"] : [undefined, undefined],
+        name,
+      );
+      for (const removed of ["prediction", "score", "threshold", "primaryOutcome"]) {
+        assert.equal(Object.hasOwn(blocked, removed), false, `${name}: ${removed}`);
+      }
+      const allowed = await firewall.classify("hello", { hook: "user_input" });
+      assert.equal(allowed.action, "allow", name);
+      assert.equal(t.shouldBlockClassification(allowed), false, name);
+      assert.deepEqual(
+        requests.map((request) => request.pathname),
+        [...deployment.routes, deployment.routes.at(-1)],
+        name,
+      );
+    });
+  }
 });
 
-test("actual SDK 0.8.2 maps canonical parentId and keeps agent identity attribution-only", async () => {
+test("a block is enforced through the actual SDK on every classifier deployment generation", async () => {
+  for (const [name, deployment] of Object.entries(CLASSIFIER_DEPLOYMENTS)) {
+    await withClassifierDeployment(deployment.respond, async (requests) => {
+      resetFirewallStub();
+      const firewall = realFirewall();
+      globalThis.__silmarilFirewallClassify = (text, options) => firewall.classify(text, options);
+      const hooks = await mod.SilmarilFirewallPlugin(mockInput(), pluginOptions({ mode: "block" }));
+
+      await assert.rejects(
+        hooks["chat.message"](
+          { sessionID: "ses_generation", messageID: "msg_attack" },
+          userMessageOutput(ATTACK_TEXT),
+        ),
+        /Silmaril Firewall blocked this request: Secret or credential exposure/u,
+        name,
+      );
+      await assert.rejects(
+        hooks["tool.execute.before"](
+          { tool: "bash", sessionID: "ses_generation", callID: "call_attack" },
+          { args: { command: ATTACK_TEXT } },
+        ),
+        /Silmaril Firewall blocked this request/u,
+        name,
+      );
+      await assert.rejects(
+        hooks["tool.execute.before"](
+          { tool: "bash", sessionID: "ses_generation", callID: "call_governed" },
+          { args: { command: GOVERNED_TEXT } },
+        ),
+        /Silmaril Firewall blocked this request: Governance policy denial/u,
+        name,
+      );
+      const allowed = userMessageOutput("hello");
+      const original = structuredClone(allowed);
+      await hooks["chat.message"]({ sessionID: "ses_generation", messageID: "msg_allowed" }, allowed);
+      assert.deepEqual(allowed, original, name);
+      assert.deepEqual(
+        [...new Set(requests.map((request) => request.pathname))],
+        deployment.routes,
+        name,
+      );
+    });
+  }
+});
+
+test("OpenCode 2 enforces a block through the actual SDK on every classifier deployment generation", async () => {
+  for (const [name, deployment] of Object.entries(CLASSIFIER_DEPLOYMENTS)) {
+    await withClassifierDeployment(deployment.respond, async () => {
+      resetFirewallStub();
+      const firewall = realFirewall();
+      globalThis.__silmarilFirewallClassify = (text, options) => firewall.classify(text, options);
+      const host = mockV2Context(pluginOptions({ mode: "block" }));
+      const cleanup = await v2mod.setup(host.context);
+      const prompt = (messageID, text) => ({
+        sessionID: "session-generation",
+        messageID,
+        delivery: "queue",
+        prompt: { text, files: [], agents: [], skills: [] },
+      });
+      try {
+        const attack = prompt("message-attack", ATTACK_TEXT);
+        await host.hooks.session.prompt(attack);
+        assert.equal(attack.prompt.text, v2mod.__testInternals.SAFE_PROMPT_NOTICE, name);
+
+        const allowed = prompt("message-allowed", "hello");
+        await host.hooks.session.prompt(allowed);
+        assert.equal(allowed.prompt.text, "hello", name);
+      } finally {
+        await cleanup();
+      }
+    });
+  }
+});
+
+test("actual SDK 1.0.0 keeps a backend-selected mode from a version 1 response when local mode is omitted", async () => {
+  for (const expectedMode of ["warn", "block"]) {
+    await withClassifierDeployment(
+      (_pathname, text) => Response.json(version1Body(text, expectedMode)),
+      async (requests) => {
+        const result = await realFirewall().classify(ATTACK_TEXT, { hook: "user_input" });
+        assert.equal(result.mode, expectedMode);
+        assert.equal(t.effectiveMode(result, pluginOptions(), {}), expectedMode);
+        assert.equal(requests.every((request) => !Object.hasOwn(request.body, "mode")), true);
+      },
+    );
+  }
+});
+
+test("actual SDK 1.0.0 reports a governance-only block with its source and typed decision", async () => {
+  for (const respond of [
+    (_pathname, text) => Response.json(version2Body(text)),
+    (_pathname, text) => Response.json(version1Body(text)),
+  ]) {
+    await withClassifierDeployment(respond, async () => {
+      const result = await realFirewall().classify(GOVERNED_TEXT, { hook: "user_input" });
+      assert.equal(result.action, "block");
+      assert.equal(result.source, "governance");
+      assert.deepEqual(result.governance, {
+        action: "block",
+        ruleId: "synthetic-rule",
+        policyVersion: "synthetic-policy",
+      });
+      assert.equal(t.shouldBlockClassification(result), true);
+      assert.equal(t.summarizeClassification(result).risk, "Governance policy denial");
+    });
+  }
+});
+
+test("actual SDK 1.0.0 maps canonical parentId and keeps agent identity attribution-only", async () => {
   const originalFetch = globalThis.fetch;
   let requestBody;
   globalThis.fetch = async (_input, init) => {
     requestBody = JSON.parse(String(init?.body));
-    return new Response(JSON.stringify({
-      prediction: "BENIGN",
-      score: 0.01,
-      threshold: 0.5,
-      governance: {
+    return Response.json({
+      results: [{
         action: "allow",
-        policy_version: "fixture",
-      },
-    }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
+        governance: {
+          action: "allow",
+          policy_version: "fixture",
+        },
+      }],
     });
   };
   try {
@@ -1035,20 +1186,30 @@ test("native block reason and structured log omit raw classified text", () => {
     metadata: {},
   };
   const result = {
-    prediction: "MALICIOUS",
-    score: 0.92,
-    threshold: 0.5,
-    primaryOutcome: "prompt_injection",
+    action: "block",
+    source: "model",
+    confidence: "very_high",
+    severity: "high",
+    outcome: "prompt_injection",
   };
   const reason = t.formatBlockReason(result);
   assert.ok(reason.includes("Silmaril Firewall blocked this request"));
-  assert.equal(reason.includes("score"), false);
-  assert.equal(reason.includes("threshold"), false);
+  assert.equal(reason.includes("very_high"), false);
   assert.equal(reason.includes("ignore previous instructions"), false);
   const logSummary = t.buildLogSummary(target, result);
-  assert.equal(logSummary.score, 0.92);
-  assert.equal(logSummary.threshold, 0.5);
-  assert.equal(logSummary.primaryOutcome, "prompt_injection");
+  assert.deepEqual(logSummary, {
+    hookEventName: "tool.execute.before",
+    hook: "tool_call",
+    toolName: "bash",
+    callId: "call_1",
+    action: "block",
+    source: "model",
+    confidence: "very_high",
+    severity: "high",
+    outcome: "prompt_injection",
+    risk: "Unsafe agent control attempt",
+    blocked: true,
+  });
   assert.equal(JSON.stringify(logSummary).includes("ignore previous instructions"), false);
 });
 
@@ -1124,9 +1285,10 @@ test("OpenCode 1 classification clears successful deadlines and cancels a stalle
 test("chat.message: malicious result is silent in Shadow", async () => {
   resetFirewallStub();
   globalThis.__silmarilFirewallClassify = async () => ({
-    prediction: "MALICIOUS",
-    score: 0.99,
-    threshold: 0.5,
+    action: "block",
+    source: "model",
+    confidence: "very_high",
+    severity: "high",
     mode: "shadow",
   });
   const hooks = await mod.SilmarilFirewallPlugin(mockInput(), pluginOptions());
@@ -1139,10 +1301,11 @@ test("chat.message: malicious result is silent in Shadow", async () => {
 test("chat.message and tool.execute.before: optional blocking throws before execution", async () => {
   resetFirewallStub();
   globalThis.__silmarilFirewallClassify = async () => ({
-    prediction: "MALICIOUS",
-    score: 0.99,
-    threshold: 0.5,
-    primaryOutcome: "prompt_injection",
+    action: "block",
+    source: "model",
+    confidence: "very_high",
+    severity: "high",
+    outcome: "prompt_injection",
   });
   const hooks = await mod.SilmarilFirewallPlugin(mockInput(), pluginOptions({ block_malicious: true }));
 
@@ -1181,9 +1344,10 @@ test("chat.message and tool.execute.before: optional blocking throws before exec
 test("Warn preserves content and adds only the bounded warning on supported surfaces", async () => {
   resetFirewallStub();
   globalThis.__silmarilFirewallClassify = async () => ({
-    prediction: "MALICIOUS",
-    score: 0.99,
-    threshold: 0.5,
+    action: "block",
+    source: "model",
+    confidence: "very_high",
+    severity: "high",
     mode: "warn",
   });
   const hooks = await mod.SilmarilFirewallPlugin(mockInput(), pluginOptions());
@@ -1211,10 +1375,8 @@ test("Warn preserves content and adds only the bounded warning on supported surf
 test("chat.message governance Warn evidence reflects actual bounded-context delivery", async () => {
   resetFirewallStub();
   const governanceOnly = {
-    prediction: "BENIGN",
-    score: 0.01,
-    threshold: 0.5,
-    primaryOutcome: "benign",
+    action: "block",
+    source: "governance",
     governance: { action: "block", policyVersion: "synthetic-policy" },
   };
   globalThis.__silmarilFirewallClassify = async () => governanceOnly;
@@ -1293,81 +1455,45 @@ test("chat.message governance Warn evidence reflects actual bounded-context deli
   }
 });
 
-test("policy candidate uses exact MALICIOUS prediction or exact governance block", () => {
-  assert.equal(t.shouldBlockClassification({
-    prediction: "BENIGN",
-    score: 0.99,
-    threshold: 0.5,
-    primaryOutcome: "control_abuse",
-  }), false);
-  assert.equal(t.shouldBlockClassification({
-    prediction: "MALICIOUS",
-    score: 0.99,
-    threshold: 0.5,
-    primaryOutcome: "benign",
-  }), true);
-  assert.equal(t.summarizeClassification({
-    prediction: "MALICIOUS",
-    score: 0.99,
-    threshold: 0.5,
-    primaryOutcome: "benign",
-  }).risk, "Unexpected classification conflict");
-  assert.equal(t.summarizeClassification({
-    prediction: "BENIGN",
-    score: 0.01,
-    threshold: 0.5,
-    primaryOutcome: "benign",
-  }).risk, "No flagged risk");
-  const governanceOnly = {
-    prediction: "BENIGN",
-    score: 0.01,
-    threshold: 0.5,
-    primaryOutcome: "benign",
-    governance: { action: "block", policyVersion: "synthetic-policy" },
-  };
-  assert.equal(t.shouldBlockClassification(governanceOnly), true);
-  assert.deepEqual(t.summarizeClassification(governanceOnly), {
-    prediction: "BENIGN",
+test("policy candidate follows the decision action and nothing else", () => {
+  const governance = { action: "block", policyVersion: "synthetic-policy" };
+  const evidence = { confidence: "very_high", severity: "critical", outcome: "control_abuse" };
+  for (const allowed of [
+    { action: "allow" },
+    { action: "allow", ...evidence },
+    { action: "allow", source: "model", ...evidence },
+    { action: "allow", governance },
+  ]) {
+    assert.equal(t.shouldBlockClassification(allowed), false);
+    assert.equal(t.summarizeClassification(allowed).risk, "No flagged risk");
+  }
+  for (const blocked of [
+    { action: "block" },
+    { action: "block", source: "model", ...evidence },
+    { action: "block", source: "model", confidence: "very_low", severity: "minimal" },
+    { action: "block", source: "governance", governance },
+    { action: "block", source: "future_source" },
+    { action: "block", governance: { action: "allow", policyVersion: "synthetic-policy" } },
+  ]) {
+    assert.equal(t.shouldBlockClassification(blocked), true);
+  }
+  assert.equal(
+    t.summarizeClassification({ action: "block", source: "model", outcome: "benign" }).risk,
+    "Unexpected classification conflict",
+  );
+  assert.equal(t.summarizeClassification({ action: "block" }).risk, "Unsafe content");
+  assert.deepEqual(t.summarizeClassification({ action: "block", source: "governance", governance }), {
+    action: "block",
     risk: "Governance policy denial",
     blocked: true,
   });
-  assert.equal(t.shouldBlockClassification({
-    prediction: "BENIGN",
-    governance: { action: "allow", policyVersion: "synthetic-policy" },
-  }), false);
-  assert.equal(t.shouldBlockClassification({
-    prediction: "BENIGN",
-    governance: { action: "BLOCK", policyVersion: "synthetic-policy" },
-  }), false);
-  assert.equal(t.shouldBlockClassification({
-    prediction: "BENIGN",
-    governance: "block",
-  }), false);
-  assert.equal(t.shouldBlockClassification({
-    prediction: "MALICIOUS",
-    score: 0.49,
-    threshold: 0.5,
-    primaryOutcome: "control_abuse",
-  }), true);
-  assert.equal(t.shouldBlockClassification({
-    prediction: "MALICIOUS",
-    score: 0.5,
-    threshold: 0.5,
-    primaryOutcome: "control_abuse",
-  }), true);
-  assert.equal(t.shouldBlockClassification({ prediction: "UNKNOWN", score: 1 }), false);
-  assert.equal(t.shouldBlockClassification({ prediction: "malicious", blocked: true }), false);
-  assert.equal(t.shouldBlockClassification({ blocked: true, score: 1 }), false);
-  assert.equal(t.shouldBlockClassification({}), false);
 });
 
 test("governance-only blocks use every mutable native boundary without relabeling the model", async () => {
   resetFirewallStub();
   globalThis.__silmarilFirewallClassify = async () => ({
-    prediction: "BENIGN",
-    score: 0.01,
-    threshold: 0.5,
-    primaryOutcome: "benign",
+    action: "block",
+    source: "governance",
     governance: { action: "block", policyVersion: "synthetic-policy" },
   });
   const hooks = await mod.SilmarilFirewallPlugin(
@@ -1411,10 +1537,8 @@ test("governance-only blocks use every mutable native boundary without relabelin
 
 test("governance-only candidates retain Shadow and supported Warn behavior", async () => {
   const governanceOnly = {
-    prediction: "BENIGN",
-    score: 0.01,
-    threshold: 0.5,
-    primaryOutcome: "benign",
+    action: "block",
+    source: "governance",
     governance: { action: "block", policyVersion: "synthetic-policy" },
   };
 
@@ -1503,10 +1627,11 @@ test("tool hooks: benign before and after classify without appending context", a
 test("Shadow preserves every OpenCode hook boundary", async () => {
   resetFirewallStub();
   globalThis.__silmarilFirewallClassify = async () => ({
-    prediction: "MALICIOUS",
-    score: 0.99,
-    threshold: 0.5,
-    primaryOutcome: "control_abuse",
+    action: "block",
+    source: "model",
+    confidence: "very_high",
+    severity: "high",
+    outcome: "control_abuse",
     mode: "shadow",
   });
   const hooks = await mod.SilmarilFirewallPlugin(mockInput(), pluginOptions());
@@ -1551,10 +1676,11 @@ test("Shadow preserves every OpenCode hook boundary", async () => {
 test("tool hooks preserve child session metadata while blocking", async () => {
   resetFirewallStub();
   globalThis.__silmarilFirewallClassify = async () => ({
-    prediction: "MALICIOUS",
-    score: 0.99,
-    threshold: 0.5,
-    primaryOutcome: "control_abuse",
+    action: "block",
+    source: "model",
+    confidence: "very_high",
+    severity: "high",
+    outcome: "control_abuse",
   });
   const hooks = await mod.SilmarilFirewallPlugin(mockInput(), pluginOptions({ block_malicious: true }));
 
@@ -1573,10 +1699,11 @@ test("tool hooks preserve child session metadata while blocking", async () => {
 test("child session events classify only the current lifecycle payload and ignore stored history", async () => {
   resetFirewallStub();
   globalThis.__silmarilFirewallClassify = async () => ({
-    prediction: "MALICIOUS",
-    score: 0.99,
-    threshold: 0.5,
-    primaryOutcome: "control_abuse",
+    action: "block",
+    source: "model",
+    confidence: "very_high",
+    severity: "high",
+    outcome: "control_abuse",
   });
   const sessions = {
     child_session: {
@@ -1774,10 +1901,11 @@ test("experimental.text.complete: classifies assistant output without mutating t
 test("experimental.text.complete: Block replaces malicious assistant output", async () => {
   resetFirewallStub();
   globalThis.__silmarilFirewallClassify = async () => ({
-    prediction: "MALICIOUS",
-    score: 0.99,
-    threshold: 0.5,
-    primaryOutcome: "control_abuse",
+    action: "block",
+    source: "model",
+    confidence: "very_high",
+    severity: "high",
+    outcome: "control_abuse",
   });
   const hooks = await mod.SilmarilFirewallPlugin(mockInput(), pluginOptions({ block_malicious: true }));
   const output = { text: "assistant secret text" };
@@ -1797,10 +1925,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
     rawText: `Reply with OK only. ${marker}`,
     sessionIdentity: "secret-session",
     classification: {
-      prediction: "BENIGN",
-      score: 0.01,
-      threshold: 0.5,
-      primaryOutcome: "benign",
+      action: "allow",
     },
     policyDecision: "allow",
     nativeAction: "allowed",
@@ -1822,8 +1947,9 @@ test("local evidence is redacted, correlated, and native-action honest", async (
     mode: "block",
     rawText: "RAW_OPEN_CODE_SECRET",
     classification: {
-      prediction: "MALICIOUS",
-      primaryOutcome: "secret_exposure",
+      action: "block",
+      source: "model",
+      outcome: "secret_exposure",
     },
     policyDecision: "block",
     nativeAction: "block_returned",
@@ -1839,7 +1965,7 @@ test("local evidence is redacted, correlated, and native-action honest", async (
       hook: "user_input",
       mode: "shadow",
       rawText: "private prompt",
-      classification: { prediction: "BENIGN" },
+      classification: { action: "allow" },
       policyDecision: "allow",
       nativeAction: "allowed",
       pluginVersion: "0.4.8",
@@ -1853,11 +1979,57 @@ test("local evidence is redacted, correlated, and native-action honest", async (
   }
 });
 
+test("local evidence records known confidence and severity and never model scores", () => {
+  const build = (classification) => t.buildLocalProtectionEvent({
+    hook: "pre_tool",
+    mode: "block",
+    rawText: "synthetic input",
+    classification,
+    policyDecision: "block",
+    nativeAction: "block_returned",
+    pluginVersion: packageVersion,
+  });
+  const absent = (event, keys) => keys.every((key) => !Object.hasOwn(event, key));
+  for (const [confidence, severity] of [
+    ["very_low", "minimal"],
+    ["low", "low"],
+    ["medium", "moderate"],
+    ["high", "high"],
+    ["very_high", "critical"],
+  ]) {
+    const event = build({ action: "block", source: "model", confidence, severity });
+    assert.equal(event.schemaVersion, 1);
+    assert.equal(event.prediction, "malicious");
+    assert.equal(event.confidence, confidence);
+    assert.equal(event.severity, severity);
+    assert.equal(absent(event, ["modelScore", "modelThreshold"]), true);
+  }
+  const unknownLevels = build({
+    action: "block",
+    source: "model",
+    confidence: "certain",
+    severity: "extreme",
+  });
+  assert.equal(unknownLevels.prediction, "malicious");
+  assert.equal(absent(unknownLevels, ["confidence", "severity"]), true);
+  assert.equal(JSON.stringify(unknownLevels).includes("certain"), false);
+  for (const [classification, prediction] of [
+    [{ action: "allow" }, "benign"],
+    [{ action: "block", source: "governance" }, "benign"],
+    [{ action: "block" }, "malicious"],
+  ]) {
+    const event = build(classification);
+    assert.equal(event.prediction, prediction);
+    assert.equal(absent(event, ["confidence", "severity", "modelScore", "modelThreshold"]), true);
+  }
+});
+
 test("local evidence failure cannot weaken native blocking", async () => {
   resetFirewallStub();
   globalThis.__silmarilFirewallClassify = async () => ({
-    prediction: "MALICIOUS",
-    primaryOutcome: "control_abuse",
+    action: "block",
+    source: "model",
+    outcome: "control_abuse",
   });
   const root = await mkdtemp(path.join(tmpdir(), "silmaril-opencode-failure-"));
   const invalidDirectory = path.join(root, "occupied");
@@ -1890,10 +2062,8 @@ test("local evidence failure cannot weaken native blocking", async () => {
 test("governance-only local evidence keeps BENIGN and marks observer blocking unavailable", async () => {
   resetFirewallStub();
   globalThis.__silmarilFirewallClassify = async () => ({
-    prediction: "BENIGN",
-    score: 0.01,
-    threshold: 0.5,
-    primaryOutcome: "benign",
+    action: "block",
+    source: "governance",
     governance: { action: "block", policyVersion: "synthetic-policy" },
   });
   const root = await mkdtemp(path.join(tmpdir(), "silmaril-opencode-governance-"));
@@ -1960,8 +2130,9 @@ test("run hooks: missing config, empty payloads, and classifier errors fail open
 test("OpenCode 2 prompt hook replaces every associated prompt field without throwing", async () => {
   resetFirewallStub();
   globalThis.__silmarilFirewallClassify = async () => ({
-    prediction: "MALICIOUS",
-    primaryOutcome: "control_abuse",
+    action: "block",
+    source: "model",
+    outcome: "control_abuse",
   });
   const host = mockV2Context(pluginOptions({ mode: "block" }));
   const cleanup = await v2mod.setup(host.context);
@@ -2296,7 +2467,8 @@ test("OpenCode 2 stderr diagnostics never invoke a non-settling app.log extensio
 test("OpenCode 2 tool hooks keep generic namespaces as plain tools and remove all blocked output", async () => {
   resetFirewallStub();
   globalThis.__silmarilFirewallClassify = async () => ({
-    prediction: "BENIGN",
+    action: "block",
+    source: "governance",
     governance: { action: "block", policyVersion: "fixture" },
   });
   const toolList = [{
@@ -2658,7 +2830,7 @@ test("release version is consistent across package metadata and V1/V2 runtime at
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
   const packageLock = JSON.parse(await readFile(path.join(repoRoot, "package-lock.json"), "utf8"));
   const versionSource = await readFile(path.join(repoRoot, "src", "version.ts"), "utf8");
-  assert.equal(packageJson.version, "0.4.12");
+  assert.equal(packageJson.version, "0.5.0");
   assert.equal(packageLock.version, packageJson.version);
   assert.equal(packageLock.packages[""].version, packageJson.version);
   assert.equal(
@@ -2683,9 +2855,9 @@ test("release version is consistent across package metadata and V1/V2 runtime at
   );
 });
 
-test("source and dependency invariants: exact host and native PTY pins, SDK 0.8.2, and blocked publication", async () => {
+test("source and dependency invariants: exact host and native PTY pins, SDK 1.0.0, and blocked publication", async () => {
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
-  assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.8.2");
+  assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "1.0.0");
   assert.equal(packageJson.devDependencies["@lydell/node-pty"], "1.2.0-beta.12");
   assert.equal(packageJson.devDependencies["@opencode-ai/plugin"], "1.19.5");
   assert.equal(packageJson.devDependencies["opencode-ai"], "1.19.5");
@@ -2836,15 +3008,74 @@ test("native acceptance scripted model replays tool calls by completed tool resu
 test("native acceptance loopback classifier blocks only the scripted surfaces", () => {
   const preToolText = nativePlan("pre-tool-block").calls[0].arguments.content;
   const poison = nativePlan("tool-response-block").poison;
-  assert.equal(loopbackVerdict({ hook: "tool_call", text: preToolText }).decision, "block");
-  assert.equal(loopbackVerdict({ hook: "tool_response", text: preToolText }).decision, "allow");
-  assert.equal(loopbackVerdict({ hook: "tool_response", text: `1: ${poison}` }).decision, "block");
-  assert.equal(loopbackVerdict({ hook: "tool_call", text: poison }).decision, "allow");
-  const blocked = loopbackVerdict({ hook: "tool_response", text: poison });
-  assert.equal(blocked.body.prediction, "MALICIOUS");
-  assert.equal(blocked.body.governance.action, "block");
-  assert.equal(typeof blocked.body.governance.policy_version, "string");
-  assert.equal(loopbackVerdict({ hook: "user_input", text: "hello" }).body.prediction, "BENIGN");
+  for (const route of [V2_ROUTE, V1_ROUTE]) {
+    assert.equal(loopbackVerdict(route, { hook: "tool_call", text: preToolText }).decision, "block");
+    assert.equal(loopbackVerdict(route, { hook: "tool_response", text: preToolText }).decision, "allow");
+    assert.equal(loopbackVerdict(route, { hook: "tool_response", text: `1: ${poison}` }).decision, "block");
+    assert.equal(loopbackVerdict(route, { hook: "tool_call", text: poison }).decision, "allow");
+  }
+  const governance = { action: "block", policy_version: "native-acceptance-v1" };
+  assert.deepEqual(loopbackVerdict(V2_ROUTE, { hook: "tool_response", text: poison }).body, {
+    results: [{
+      action: "block",
+      source: "model",
+      confidence: "very_high",
+      severity: "high",
+      outcome: "control_abuse",
+      governance,
+      model_id: null,
+    }],
+  });
+  assert.deepEqual(loopbackVerdict(V1_ROUTE, { hook: "tool_response", text: poison }).body, {
+    prediction: "MALICIOUS",
+    score: 0.99,
+    threshold: 0.5,
+    mode: "block",
+    primary_outcome: "control_abuse",
+    governance,
+  });
+  assert.equal(
+    loopbackVerdict(V2_ROUTE, { hook: "user_input", text: "hello" }).body.results[0].action,
+    "allow",
+  );
+  assert.equal(loopbackVerdict(V1_ROUTE, { hook: "user_input", text: "hello" }).body.prediction, "BENIGN");
+});
+
+test("native acceptance loopback classifier serves both classify versions to the actual SDK", async () => {
+  const stage = { plan: nativePlan("pre-tool-block") };
+  const classifier = await startClassifier({ stage });
+  try {
+    const attack = stage.plan.calls[0].arguments.content;
+    for (const apiUrl of [classifier.url, `${classifier.origin}${V2_ROUTE}`]) {
+      const firewall = new RealFirewall({
+        apiKey: "native-acceptance-loopback-key",
+        apiUrl,
+        timeoutMs: 1_000,
+      });
+      const blocked = await firewall.classify(attack, { hook: "tool_call" });
+      assert.deepEqual(
+        [blocked.action, blocked.source, blocked.confidence, blocked.severity],
+        ["block", "model", "very_high", "high"],
+      );
+      assert.equal((await firewall.classify("hello", { hook: "tool_call" })).action, "allow");
+    }
+    assert.equal(classifier.requests.length, 4);
+    const legacy = await fetch(classifier.url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": "native-acceptance-loopback-key",
+      },
+      body: JSON.stringify({ hook: "tool_call", text: attack }),
+    });
+    assert.equal((await legacy.json()).prediction, "MALICIOUS");
+    assert.deepEqual(
+      classifier.requests.map((request) => request.decision),
+      ["block", "allow", "block", "allow", "block"],
+    );
+  } finally {
+    await classifier.close();
+  }
 });
 
 test("native acceptance allow needs the effect on disk and tool output in the next model request", () => {
@@ -3185,6 +3416,8 @@ test("native acceptance live verdict forwards the payload and maps upstream outc
     return new Response(JSON.stringify(body), { status });
   };
 
+  const liveVerdict = (configured, body, fetchImpl) =>
+    relayLiveVerdict(configured, V1_ROUTE, body, fetchImpl);
   const blocked = await liveVerdict(
     live,
     payload,
@@ -3265,6 +3498,106 @@ test("native acceptance live verdict forwards the payload and maps upstream outc
   });
   assert.equal(unreachable.outcome, "transport_error");
   assert.equal(unreachable.decision, null);
+});
+
+test("native acceptance live verdict relays each classify version to the matching upstream route", async () => {
+  const live = { url: "https://cascade.invalid/stage/classify?tenant=acme", key: "unit-key" };
+  const payload = { hook: "tool_response", text: "notes" };
+  const urls = [];
+  const respond = (status, body) => async (url) => {
+    urls.push(url);
+    return Response.json(body, { status });
+  };
+
+  assert.equal(upstreamRoute(live.url, V2_ROUTE), "https://cascade.invalid/stage/v2/classify?tenant=acme");
+  assert.equal(upstreamRoute("https://cascade.invalid/v2/classify/", V1_ROUTE), "https://cascade.invalid/classify");
+  assert.equal(upstreamRoute("https://cascade.invalid/base", V2_ROUTE), "https://cascade.invalid/base/v2/classify");
+
+  const body = { results: [{ action: "block", source: "model", confidence: "high" }] };
+  const blocked = await relayLiveVerdict(live, V2_ROUTE, payload, respond(200, body));
+  assert.deepEqual(urls, ["https://cascade.invalid/stage/v2/classify?tenant=acme"]);
+  assert.deepEqual(blocked, {
+    outcome: "success",
+    status: 200,
+    body,
+    decision: "block",
+    upstream: { action: "block", source: "model" },
+  });
+  const allowed = await relayLiveVerdict(
+    live,
+    V2_ROUTE,
+    payload,
+    respond(200, { results: [{ action: "allow", source: null }] }),
+  );
+  assert.equal(allowed.decision, "allow");
+  assert.deepEqual(allowed.upstream, { action: "allow", source: null });
+
+  for (const status of [403, 404, 405]) {
+    assert.deepEqual(
+      await relayLiveVerdict(live, V2_ROUTE, payload, respond(status, { message: "missing" })),
+      { outcome: "route_unavailable", status, body: {} },
+    );
+    assert.equal(
+      (await relayLiveVerdict(live, V1_ROUTE, payload, respond(status, { message: "denied" }))).outcome,
+      "http_error",
+    );
+  }
+  assert.equal(
+    (await relayLiveVerdict(live, V2_ROUTE, payload, respond(500, {}))).outcome,
+    "http_error",
+  );
+  for (const malformed of [
+    { results: null },
+    { results: [] },
+    { results: [{ source: "model" }] },
+    { results: [{ action: "allow" }, { action: "block" }] },
+  ]) {
+    assert.equal(
+      (await relayLiveVerdict(live, V2_ROUTE, payload, respond(200, malformed))).outcome,
+      "invalid_response",
+    );
+  }
+});
+
+test("native acceptance classifier passes a missing version 2 route to the SDK and records only the fallback", async () => {
+  const stage = { plan: nativePlan("tool-response-block", true) };
+  const upstream = [];
+  const classifier = await startClassifier({
+    stage,
+    live: { url: "https://cascade.invalid/classify", key: "unit-key" },
+    fetchImpl: async (url) => {
+      upstream.push(url);
+      return url.endsWith(V2_ROUTE)
+        ? Response.json({ message: "Missing Authentication Token" }, { status: 403 })
+        : Response.json({ prediction: "MALICIOUS", mode: "shadow" });
+    },
+  });
+  try {
+    const firewall = new RealFirewall({
+      apiKey: "native-acceptance-loopback-key",
+      apiUrl: classifier.url,
+      timeoutMs: 1_000,
+    });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = await firewall.classify(stage.plan.poison, { hook: "tool_response" });
+      assert.equal(result.action, "block");
+    }
+    assert.deepEqual(upstream, [
+      "https://cascade.invalid/v2/classify",
+      "https://cascade.invalid/classify",
+      "https://cascade.invalid/classify",
+    ]);
+    assert.deepEqual(
+      classifier.requests.map(({ decision, outcome, upstream: seen }) => ({ decision, outcome, seen })),
+      Array(2).fill({
+        decision: "block",
+        outcome: "success",
+        seen: { prediction: "MALICIOUS", mode: "shadow", action: null },
+      }),
+    );
+  } finally {
+    await classifier.close();
+  }
 });
 
 test("native acceptance classifier proxies live requests and records duration and upstream", async () => {

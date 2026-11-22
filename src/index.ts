@@ -10,6 +10,7 @@ import type {
   PluginOptions,
 } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
+import type { BlockResult } from "@silmaril-security/sdk";
 import {
   buildLocalProtectionEvent,
   emitLocalProtectionEvent,
@@ -55,7 +56,7 @@ type RuntimeConfig = {
 type FirewallMode = "shadow" | "warn" | "block";
 
 type RuntimeSource = Record<string, unknown>;
-type ClassificationResult = Record<string, unknown>;
+type ClassificationResult = BlockResult;
 type FirewallClient = {
   classify(text: string, options?: ClassifyOptions): Promise<ClassificationResult>;
 };
@@ -488,7 +489,7 @@ export function buildCombinedToolContext(
 
 export function summarizeClassification(result: ClassificationResult): Record<string, unknown> {
   return omitUndefined({
-    prediction: result.prediction,
+    action: result.action,
     risk: describeRisk(result),
     blocked: shouldBlockClassification(result),
   });
@@ -500,18 +501,22 @@ export function buildLogSummary(target: HookTarget, result: ClassificationResult
     hook: target.hook,
     toolName: target.toolName,
     callId: target.callId,
-    prediction: result.prediction,
-    score: readFiniteNumber(result.score),
-    threshold: readFiniteNumber(result.threshold),
-    primaryOutcome: readString(result.primaryOutcome) ?? readString(result.primary_outcome),
+    action: result.action,
+    source: result.source,
+    confidence: result.confidence,
+    severity: result.severity,
+    outcome: result.outcome,
     risk: describeRisk(result),
     blocked: shouldBlockClassification(result),
   });
 }
 
 export function shouldBlockClassification(result: ClassificationResult): boolean {
-  return result.prediction === "MALICIOUS"
-    || readRecord(result.governance)?.action === "block";
+  return result.action !== "allow";
+}
+
+function isGovernanceBlock(result: ClassificationResult): boolean {
+  return shouldBlockClassification(result) && result.source === "governance";
 }
 
 /** @deprecated Use shouldBlockClassification. */
@@ -526,8 +531,7 @@ export function formatDecisionText(
   result: ClassificationResult,
   copy: { title: string; action: string },
 ): string {
-  const title = result.prediction !== "MALICIOUS"
-    && readRecord(result.governance)?.action === "block"
+  const title = isGovernanceBlock(result)
     ? "Silmaril Firewall blocked content under governance policy."
     : copy.title;
   return [
@@ -567,14 +571,17 @@ function describeSurface(target: Pick<HookTarget, "hookEventName" | "toolName" |
 }
 
 function describeRisk(result: ClassificationResult): string {
-  const outcome = readString(result.primaryOutcome) ?? readString(result.primary_outcome);
-  const governanceBlocked = readRecord(result.governance)?.action === "block";
-  if (!outcome) {
-    return governanceBlocked && result.prediction !== "MALICIOUS"
-      ? "Governance policy denial"
-      : "Unsafe content";
+  if (!shouldBlockClassification(result)) {
+    return "No flagged risk";
   }
-  switch (outcome.trim().toLowerCase()) {
+  if (isGovernanceBlock(result)) {
+    return "Governance policy denial";
+  }
+  const outcome = result.outcome?.trim();
+  if (!outcome) {
+    return "Unsafe content";
+  }
+  switch (outcome.toLowerCase()) {
     case "information_disclosure":
       return "Sensitive information disclosure";
     case "secret_exposure":
@@ -587,12 +594,7 @@ function describeRisk(result: ClassificationResult): string {
     case "service_disruption":
       return "Service disruption risk";
     case "benign":
-      if (governanceBlocked && result.prediction !== "MALICIOUS") {
-        return "Governance policy denial";
-      }
-      return result.prediction === "MALICIOUS"
-        ? "Unexpected classification conflict"
-        : "No flagged risk";
+      return "Unexpected classification conflict";
     default:
       return outcome
         .replace(/[_-]+/g, " ")
