@@ -30,6 +30,8 @@ jobs:
         with:
           fetch-depth: 2
           persist-credentials: false
+      - name: Test package version policy
+        run: python3 .github/scripts/test-package-version.py
       - name: Compare the proposed merge with its main parent
         run: python3 .github/scripts/check-package-version.py HEAD^1 HEAD
 
