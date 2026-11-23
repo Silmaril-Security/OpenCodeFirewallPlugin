@@ -71,6 +71,7 @@ type ClassifyOptions = {
   governance?: GovernanceContext;
   metadata?: Record<string, unknown>;
   requestId?: string;
+  signal?: AbortSignal;
 };
 type GovernanceContext = {
   resource?: {
@@ -639,14 +640,28 @@ async function classifyTarget(
     return undefined;
   }
 
+  const controller = new AbortController();
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    deadlineTimer = setTimeout(() => {
+      const error = new Error("Silmaril classification deadline exceeded");
+      error.name = "TimeoutError";
+      controller.abort(error);
+      reject(error);
+    }, config.timeoutMs);
+  });
   try {
-    const result = await firewall.classify(target.text, {
-      hook: target.hook,
-      toolName: target.toolName,
-      governance: target.governance,
-      metadata: withProvenance(target.metadata, config.endpointId),
-      requestId: buildLogicalRequestId(target),
-    });
+    const result = await Promise.race([
+      firewall.classify(target.text, {
+        hook: target.hook,
+        toolName: target.toolName,
+        governance: target.governance,
+        metadata: withProvenance(target.metadata, config.endpointId),
+        requestId: buildLogicalRequestId(target),
+        signal: controller.signal,
+      }),
+      deadline,
+    ]);
     if (debugEnabled) {
       await logger("classification_result", buildLogSummary(target, result));
     }
@@ -660,6 +675,8 @@ async function classifyTarget(
       errorName: err instanceof Error ? err.name : typeof err,
     });
     return undefined;
+  } finally {
+    clearTimeout(deadlineTimer);
   }
 }
 

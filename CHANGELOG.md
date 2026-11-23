@@ -1,5 +1,12 @@
 # Release notes
 
+## 0.4.12
+
+Each OpenCode 1 and OpenCode 2 logical classification now has one aggregate,
+clearable deadline. The plugin passes that deadline's
+signal to the pinned SDK 0.8.2 call, preserves the configured SDK per-attempt
+timeout, and continues to fail open on cancellation or classifier failure.
+
 ## 0.4.10
 
 The package version, lockfile, OpenCode 1 classification metadata, OpenCode 2
