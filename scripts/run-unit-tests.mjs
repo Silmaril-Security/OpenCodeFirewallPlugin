@@ -2496,7 +2496,7 @@ test("release version is consistent across package metadata and V1/V2 runtime at
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
   const packageLock = JSON.parse(await readFile(path.join(repoRoot, "package-lock.json"), "utf8"));
   const versionSource = await readFile(path.join(repoRoot, "src", "version.ts"), "utf8");
-  assert.equal(packageJson.version, "0.4.10");
+  assert.equal(packageJson.version, "0.4.11");
   assert.equal(packageLock.version, packageJson.version);
   assert.equal(packageLock.packages[""].version, packageJson.version);
   assert.equal(
