@@ -15,6 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { Firewall as RealFirewall } from "@silmaril-security/sdk";
@@ -1084,6 +1085,42 @@ test("chat.message: benign prompt classifies and stays silent", async () => {
   assert.equal(logs.some((entry) => entry.body.message === "classification_result"), true);
 });
 
+test("OpenCode 1 classification clears successful deadlines and cancels a stalled logical call", async () => {
+  resetFirewallStub();
+  let successSignal;
+  globalThis.__silmarilFirewallClassify = async (_text, options) => {
+    successSignal = options.signal;
+    return { prediction: "BENIGN", score: 0.01, threshold: 0.5 };
+  };
+  const hooks = await mod.SilmarilFirewallPlugin(
+    mockInput(),
+    pluginOptions({ timeout_ms: 250 }),
+  );
+  await hooks["chat.message"](
+    { sessionID: "ses_1", messageID: "success_1" },
+    userMessageOutput("success"),
+  );
+  assert.ok(successSignal instanceof AbortSignal);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(successSignal.aborted, false);
+
+  let stalledSignal;
+  globalThis.__silmarilFirewallClassify = (_text, options) => {
+    stalledSignal = options.signal;
+    return new Promise(() => {});
+  };
+  const started = performance.now();
+  await hooks["chat.message"](
+    { sessionID: "ses_1", messageID: "stalled_1" },
+    userMessageOutput("stalled"),
+  );
+  assert.ok(stalledSignal instanceof AbortSignal);
+  assert.equal(stalledSignal.aborted, true);
+  assert.equal(stalledSignal.reason?.name, "TimeoutError");
+  assert.ok(performance.now() - started < 1000);
+  assert.notEqual(stalledSignal, successSignal);
+});
+
 test("chat.message: malicious result is silent in Shadow", async () => {
   resetFirewallStub();
   globalThis.__silmarilFirewallClassify = async () => ({
@@ -1999,6 +2036,131 @@ test("OpenCode 2 registers silmaril_demo and uses the safe shared URL builder wi
   }
 });
 
+test("OpenCode 2 classification clears successful deadlines and cancels a stalled logical call", async () => {
+  const target = {
+    hookEventName: "session.prompt",
+    hook: "user_input",
+    text: "synthetic prompt",
+    metadata: { messageId: "message-v2" },
+  };
+  let behavior = "success";
+  const signals = [];
+  const runtime = {
+    async getClient(config) {
+      assert.equal(config.timeoutMs, 250);
+      return {
+        status: "ready",
+        client: {
+          classify(_text, options) {
+            signals.push(options.signal);
+            return behavior === "success"
+              ? Promise.resolve({ prediction: "BENIGN", score: 0.01, threshold: 0.5 })
+              : new Promise(() => {});
+          },
+        },
+      };
+    },
+  };
+  const options = pluginOptions({ timeout_ms: 250 });
+  const success = await v2mod.__testInternals.classifyTarget(
+    target,
+    options,
+    {},
+    runtime,
+    () => {},
+  );
+  assert.equal(success.prediction, "BENIGN");
+  assert.ok(signals[0] instanceof AbortSignal);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(signals[0].aborted, false);
+
+  behavior = "stalled";
+  const started = performance.now();
+  assert.equal(
+    await v2mod.__testInternals.classifyTarget(
+      target,
+      options,
+      {},
+      runtime,
+      () => {},
+    ),
+    undefined,
+  );
+  assert.ok(signals[1] instanceof AbortSignal);
+  assert.equal(signals[1].aborted, true);
+  assert.equal(signals[1].reason?.name, "TimeoutError");
+  assert.ok(performance.now() - started < 1000);
+  assert.notEqual(signals[1], signals[0]);
+});
+
+test("both OpenCode adapters cancel the pinned SDK fetch and retry wait", async () => {
+  const originalFetch = globalThis.fetch;
+  const options = pluginOptions({ timeout_ms: 250 });
+  try {
+    for (const version of [1, 2]) {
+      for (const response of ["in-flight", "rate-limited"]) {
+        resetFirewallStub();
+        let attempts = 0;
+        let aborted = false;
+        let sdkCall;
+        const firewall = new RealFirewall({
+          apiKey: "test-key",
+          apiUrl: "https://alpha.example/classify",
+          timeoutMs: 10_000,
+        });
+        globalThis.fetch = async (_input, { signal }) => {
+          attempts++;
+          if (response === "rate-limited") return new Response(null, { status: 429 });
+          return new Promise((_, reject) => {
+            signal.addEventListener("abort", () => {
+              aborted = true;
+              reject(signal.reason);
+            }, { once: true });
+          });
+        };
+        const client = {
+          classify(text, classifyOptions) {
+            sdkCall = firewall.classify(text, classifyOptions);
+            return sdkCall;
+          },
+        };
+        if (version === 1) {
+          globalThis.__silmarilFirewallClassify = client.classify;
+          const hooks = await mod.SilmarilFirewallPlugin(mockInput(), options);
+          await hooks["chat.message"](
+            { sessionID: "ses_1", messageID: response },
+            userMessageOutput("synthetic prompt"),
+          );
+        } else {
+          const result = await v2mod.__testInternals.classifyTarget(
+            {
+              hookEventName: "session.prompt",
+              hook: "user_input",
+              text: "synthetic prompt",
+              metadata: { messageId: response },
+            },
+            options,
+            {},
+            { async getClient() { return { status: "ready", client }; } },
+            () => {},
+          );
+          assert.equal(result, undefined);
+        }
+        assert.ok(sdkCall, `OpenCode ${version} did not invoke the SDK for ${response}`);
+        await Promise.race([
+          assert.rejects(sdkCall, { name: "TimeoutError" }),
+          delay(1000, undefined, { ref: false }).then(() => assert.fail("SDK missed the deadline")),
+        ]);
+        assert.equal(attempts, 1);
+        assert.equal(aborted, response === "in-flight");
+      }
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetFirewallStub();
+  }
+});
+
 test("OpenCode 2 debug diagnostics are bounded, content-free, gated, and fail open", async () => {
   const stderr = [];
   const originalConsoleError = console.error;
@@ -2496,7 +2658,7 @@ test("release version is consistent across package metadata and V1/V2 runtime at
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
   const packageLock = JSON.parse(await readFile(path.join(repoRoot, "package-lock.json"), "utf8"));
   const versionSource = await readFile(path.join(repoRoot, "src", "version.ts"), "utf8");
-  assert.equal(packageJson.version, "0.4.11");
+  assert.equal(packageJson.version, "0.4.12");
   assert.equal(packageLock.version, packageJson.version);
   assert.equal(packageLock.packages[""].version, packageJson.version);
   assert.equal(

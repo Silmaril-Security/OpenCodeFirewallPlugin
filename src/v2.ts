@@ -539,14 +539,28 @@ async function classifyTarget(
     });
     return undefined;
   }
+  const controller = new AbortController();
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    deadlineTimer = setTimeout(() => {
+      const error = new Error("Silmaril classification deadline exceeded");
+      error.name = "TimeoutError";
+      controller.abort(error);
+      reject(error);
+    }, config.timeoutMs);
+  });
   try {
-    const result = await runtimeClient.client.classify(target.text, {
-      hook: target.hook,
-      toolName: target.toolName,
-      governance: target.governance,
-      metadata: withProvenance(target.metadata, config.endpointId),
-      requestId: buildLogicalRequestId(target),
-    });
+    const result = await Promise.race([
+      runtimeClient.client.classify(target.text, {
+        hook: target.hook,
+        toolName: target.toolName,
+        governance: target.governance,
+        metadata: withProvenance(target.metadata, config.endpointId),
+        requestId: buildLogicalRequestId(target),
+        signal: controller.signal,
+      }),
+      deadline,
+    ]);
     logger("classification_result", {
       hookEventName: target.hookEventName,
       hook: target.hook,
@@ -566,6 +580,8 @@ async function classifyTarget(
       errorName: readErrorName(error),
     });
     return undefined;
+  } finally {
+    clearTimeout(deadlineTimer);
   }
 }
 
