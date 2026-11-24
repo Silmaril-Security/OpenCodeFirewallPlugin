@@ -3640,13 +3640,15 @@ test("native acceptance live verdict relays each classify version to the matchin
 test("native acceptance classifier passes a missing version 2 route to the SDK and records only the fallback", async () => {
   const stage = { plan: nativePlan("tool-response-block", true) };
   const upstream = [];
+  const refusal = Response.json({ message: "Missing Authentication Token" }, { status: 403 });
   const classifier = await startClassifier({
     stage,
     live: { url: "https://cascade.invalid/classify", key: "unit-key" },
     fetchImpl: async (url) => {
       upstream.push(url);
+      await new Promise((resolve) => setTimeout(resolve, 150));
       return url.endsWith(V2_ROUTE)
-        ? Response.json({ message: "Missing Authentication Token" }, { status: 403 })
+        ? refusal
         : Response.json({ prediction: "MALICIOUS", mode: "shadow" });
     },
   });
@@ -3673,6 +3675,8 @@ test("native acceptance classifier passes a missing version 2 route to the SDK a
         seen: { prediction: "MALICIOUS", mode: "shadow", action: null },
       }),
     );
+    assert.equal(refusal.bodyUsed, true);
+    assert.ok(classifier.requests[0].durationMs >= 300, `${classifier.requests[0].durationMs} ms`);
   } finally {
     await classifier.close();
   }

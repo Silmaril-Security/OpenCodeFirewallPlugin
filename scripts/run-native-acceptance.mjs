@@ -232,6 +232,7 @@ export async function liveVerdict(live, route, payload, fetchImpl) {
   }).catch(() => undefined);
   if (!response) return failed("transport_error");
   if (route === V2_ROUTE && ROUTE_FALLBACK_STATUSES.has(response.status)) {
+    await response.body?.cancel();
     return { outcome: "route_unavailable", status: response.status, body: {} };
   }
   if (!response.ok) return failed("http_error", { httpStatus: response.status });
@@ -586,6 +587,7 @@ async function startScriptedModel(stage) {
 
 export async function startClassifier({ stage, live, fetchImpl = fetch }) {
   const requests = [];
+  const refusedProbeStarts = new Map();
   const server = await listenLoopback(async (request, response) => {
     if (
       request.method !== "POST" ||
@@ -605,12 +607,15 @@ export async function startClassifier({ stage, live, fetchImpl = fetch }) {
       outcome: "pending",
     };
     requests.push(record);
-    const startedAt = performance.now();
+    const logicalEvent = JSON.stringify(payload);
+    const startedAt = refusedProbeStarts.get(logicalEvent) ?? performance.now();
+    refusedProbeStarts.delete(logicalEvent);
     const { status, body, ...verdict } = live
       ? await liveVerdict(live, request.url, payload, fetchImpl)
       : loopbackVerdict(request.url, payload);
     if (verdict.outcome === "route_unavailable") {
       requests.splice(requests.indexOf(record), 1);
+      refusedProbeStarts.set(logicalEvent, startedAt);
     } else {
       Object.assign(record, verdict, {
         durationMs: Math.round(performance.now() - startedAt),
