@@ -9,13 +9,29 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import type { BlockResult, Confidence, Severity } from "@silmaril-security/sdk";
 
 const EVENT_SCHEMA_VERSION = 1;
 const MAX_EVENT_BYTES = 64 * 1024;
+const MAX_PROVENANCE_BYTES = 128;
+const PLUGIN_POLICY_VERSION = "opencode-plugin-policy-v1";
+const UNSAFE_PROVENANCE_CHARACTERS = /[\p{Cc}\p{Cf}\p{Cs}]/gu;
 const RUNTIME_CHECK_MARKER = /\bsilmaril-runtime-check:([A-Za-z0-9-]{16,128})\b/;
+const CONFIDENCE_LEVELS: ReadonlySet<Confidence> = new Set([
+  "very_low",
+  "low",
+  "medium",
+  "high",
+  "very_high",
+]);
+const SEVERITY_LEVELS: ReadonlySet<Severity> = new Set([
+  "minimal",
+  "low",
+  "moderate",
+  "high",
+  "critical",
+]);
 const pendingWrites = new Set<Promise<void>>();
-
-type ClassificationLike = Record<string, unknown>;
 
 export type LocalProtectionEventInput = {
   hook: "user_input" | "pre_tool" | "post_tool" | "llm_output" | "subagent";
@@ -24,7 +40,7 @@ export type LocalProtectionEventInput = {
   requestIdentity?: string;
   sessionIdentity?: string;
   toolName?: string;
-  classification: ClassificationLike;
+  classification: BlockResult;
   policyDecision: "allow" | "monitor" | "warn" | "block";
   nativeAction: "allowed" | "block_returned" | "content_replaced" | "warning_context_returned" | "unavailable";
   warnDelivery?: "delivered" | "unsupported";
@@ -48,9 +64,9 @@ export type LocalProtectionEventV1 = {
     category: string;
     summary: string;
   };
-  prediction: "benign" | "malicious" | "unknown" | "unavailable";
-  modelScore?: number;
-  modelThreshold?: number;
+  prediction: "benign" | "malicious";
+  confidence?: Confidence;
+  severity?: Severity;
   policyDecision: LocalProtectionEventInput["policyDecision"];
   nativeAction: LocalProtectionEventInput["nativeAction"];
   warnDelivery?: LocalProtectionEventInput["warnDelivery"];
@@ -63,7 +79,8 @@ export type LocalProtectionEventV1 = {
     producer: "opencode-firewall-plugin";
     producerVersion: string;
     pluginVersion: string;
-    policyVersion: "opencode-plugin-policy-v1";
+    policyVersion: string;
+    modelVersion?: string;
     observedAt: string;
   };
 };
@@ -90,8 +107,9 @@ export function buildLocalProtectionEvent(
   input: LocalProtectionEventInput,
 ): LocalProtectionEventV1 {
   const occurredAt = (input.occurredAt ?? new Date()).toISOString();
-  const prediction = normalizePrediction(input.classification.prediction);
-  const riskClass = consequenceCategory(input.classification, prediction);
+  const prediction = modelPrediction(input.classification);
+  const riskClass = consequenceCategory(input.classification.outcome, prediction);
+  const modelVersion = boundedProvenance(input.classification.modelId);
   const runtimeMarker = input.rawText.match(RUNTIME_CHECK_MARKER)?.[0];
   const requestFingerprint = runtimeMarker
     ? sha256(runtimeMarker)
@@ -114,8 +132,6 @@ export function buildLocalProtectionEvent(
     input.nativeAction,
     input.requestIdentity ? "" : occurredAt,
   ]);
-  const modelScore = unitInterval(input.classification.score);
-  const modelThreshold = unitInterval(input.classification.threshold);
 
   return omitUndefined({
     schemaVersion: EVENT_SCHEMA_VERSION,
@@ -133,8 +149,8 @@ export function buildLocalProtectionEvent(
       summary: CONSEQUENCE_SUMMARIES[riskClass] ?? CONSEQUENCE_SUMMARIES.unknown,
     },
     prediction,
-    modelScore,
-    modelThreshold,
+    confidence: knownLevel(input.classification.confidence, CONFIDENCE_LEVELS),
+    severity: knownLevel(input.classification.severity, SEVERITY_LEVELS),
     policyDecision: input.policyDecision,
     nativeAction: input.nativeAction,
     warnDelivery: input.warnDelivery,
@@ -149,7 +165,9 @@ export function buildLocalProtectionEvent(
       producer: "opencode-firewall-plugin",
       producerVersion: bounded(input.pluginVersion, 128),
       pluginVersion: bounded(input.pluginVersion, 128),
-      policyVersion: "opencode-plugin-policy-v1",
+      policyVersion: boundedProvenance(input.classification.governance?.policyVersion)
+        ?? PLUGIN_POLICY_VERSION,
+      ...(modelVersion ? { modelVersion } : {}),
       observedAt: occurredAt,
     },
   }) as LocalProtectionEventV1;
@@ -242,25 +260,26 @@ export function resolveLocalEventDirectory(
   );
 }
 
-function normalizePrediction(
-  value: unknown,
+function modelPrediction(
+  classification: BlockResult,
 ): LocalProtectionEventV1["prediction"] {
-  if (value === "MALICIOUS") return "malicious";
-  if (value === "BENIGN") return "benign";
-  if (value === undefined || value === null) return "unavailable";
-  return "unknown";
+  return classification.action === "allow" || classification.source === "governance"
+    ? "benign"
+    : "malicious";
+}
+
+function knownLevel<Level extends string>(
+  value: string | undefined,
+  levels: ReadonlySet<Level>,
+): Level | undefined {
+  return levels.has(value as Level) ? (value as Level) : undefined;
 }
 
 function consequenceCategory(
-  classification: ClassificationLike,
+  outcome: string | undefined,
   prediction: LocalProtectionEventV1["prediction"],
 ): string {
-  const raw = typeof classification.primaryOutcome === "string"
-    ? classification.primaryOutcome
-    : typeof classification.primary_outcome === "string"
-      ? classification.primary_outcome
-      : undefined;
-  switch (raw?.trim().toLowerCase()) {
+  switch (outcome?.trim().toLowerCase()) {
     case "secret_exposure":
       return "credential_exposure";
     case "information_disclosure":
@@ -294,20 +313,23 @@ function safeToolName(value: string | undefined): string | undefined {
   return trimmed;
 }
 
+function boundedProvenance(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  let bounded = "";
+  let bytes = 0;
+  for (const character of value.replace(UNSAFE_PROVENANCE_CHARACTERS, "").trim()) {
+    bytes += Buffer.byteLength(character, "utf8");
+    if (bytes > MAX_PROVENANCE_BYTES) break;
+    bounded += character;
+  }
+  return bounded || undefined;
+}
+
 function bounded(value: string, maximum: number): string {
   return value
     .replace(/[\u0000-\u001f\u007f]+/g, " ")
     .trim()
     .slice(0, maximum);
-}
-
-function unitInterval(value: unknown): number | undefined {
-  return typeof value === "number"
-    && Number.isFinite(value)
-    && value >= 0
-    && value <= 1
-    ? value
-    : undefined;
 }
 
 function fingerprint(components: string[]): string {

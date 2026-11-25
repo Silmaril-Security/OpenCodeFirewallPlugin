@@ -371,14 +371,16 @@ function sanitizeDiagnosticFields(
   fields: Record<string, unknown>,
 ): Record<string, string | number | boolean> {
   const allowed = [
+    "action",
+    "confidence",
     "errorName",
     "governanceAction",
     "hook",
     "hookEventName",
     "mode",
-    "prediction",
-    "score",
-    "threshold",
+    "outcome",
+    "severity",
+    "source",
     "toolName",
   ] as const;
   const result: Record<string, string | number | boolean> = {};
@@ -565,9 +567,11 @@ async function classifyTarget(
       hookEventName: target.hookEventName,
       hook: target.hook,
       toolName: target.toolName,
-      prediction: result.prediction,
-      score: result.score,
-      threshold: result.threshold,
+      action: result.action,
+      source: result.source,
+      confidence: result.confidence,
+      severity: result.severity,
+      outcome: result.outcome,
       mode: result.mode,
       governanceAction: result.governance?.action,
     });
@@ -651,7 +655,7 @@ function effectiveMode(
 }
 
 function shouldBlockClassification(result: ClassificationResult): boolean {
-  return result.prediction === "MALICIOUS" || result.governance?.action === "block";
+  return result.action !== "allow";
 }
 
 function appendBoundedWarning(content: string): string {
@@ -714,7 +718,7 @@ function emitOpenCodeLocalEvidence(
     requestIdentity: buildLogicalRequestId(target),
     sessionIdentity: readString(target.metadata.sessionId),
     toolName: target.toolName,
-    classification: result as unknown as Record<string, unknown>,
+    classification: result,
     policyDecision: candidate
       ? mode === "block" && enforceable
         ? "block"

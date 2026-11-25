@@ -1,5 +1,34 @@
 # Release notes
 
+## 0.5.0
+
+The package moves to `@silmaril-security/sdk` 1.0.0, which calls
+`/v2/classify`, returns the Firewall decision instead of a score, and falls
+back to `/classify` on deployments without the new route. Plugin configuration
+is unchanged.
+
+Both adapters now decide on the SDK result's `action`: anything other than
+`allow` is a policy candidate. The OpenCode 1 adapter previously read
+`prediction` from an untyped result, which SDK 1.0.0 no longer returns; it now
+uses the SDK's `BlockResult` type so a removed field cannot be read. A block
+whose `source` is `governance` keeps its governance-policy copy and its benign
+recorded prediction.
+
+Local evidence records the decision's `confidence` and `severity` when the
+Firewall reports a value the receipt schema knows, and no longer writes
+`modelScore` or `modelThreshold`. The event schema version and every other
+field are unchanged. `provenance.modelVersion` now carries the decision's
+model identifier and `provenance.policyVersion` the governance decision's
+policy version, keeping `opencode-plugin-policy-v1` for decisions without
+governance; both are stripped of control and format characters and cut to 128
+UTF-8 bytes. Debug diagnostics report `action`, `source`,
+`confidence`, `severity`, and `outcome` in place of `prediction`, `score`,
+`threshold`, and `primaryOutcome`.
+
+The native acceptance classifier serves `/v2/classify` with a version 2 body
+and `/classify` with a version 1 body, and the live relay forwards each route
+to the matching customer route.
+
 ## 0.4.12
 
 Each OpenCode 1 and OpenCode 2 logical classification now has one aggregate,

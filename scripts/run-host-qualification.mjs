@@ -88,25 +88,36 @@ try {
     await readFile(path.join(packageDirectory, "package.json"), "utf8"),
   );
   assert.equal(packageJson.exports["./server"].import, "./dist/server.js");
-  assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "0.8.2");
+  assert.equal(packageJson.dependencies["@silmaril-security/sdk"], "1.0.0");
   assert.equal(packageJson.peerDependencies["@opencode-ai/plugin"], ">=1.18.22");
 
   let requestBodies = [];
-  globalThis.fetch = async (_input, init) => {
+  globalThis.fetch = async (input, init) => {
     const body = JSON.parse(String(init?.body));
     requestBodies.push(body);
     const malicious = body.text.includes("BLOCK_BEFORE")
       || (body.hook === "tool_response" && body.text.includes("MALICIOUS_TOOL_RESULT"))
       || body.text.includes("MALICIOUS_PROMPT");
-    return new Response(JSON.stringify({
-      prediction: malicious ? "MALICIOUS" : "BENIGN",
-      score: malicious ? 0.99 : 0.01,
-      threshold: 0.5,
-      primary_outcome: malicious ? "control_abuse" : "benign",
-    }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
+    return Response.json(
+      new URL(String(input)).pathname.endsWith("/v2/classify")
+        ? {
+          results: [{
+            action: malicious ? "block" : "allow",
+            source: malicious ? "model" : null,
+            confidence: malicious ? "very_high" : null,
+            severity: malicious ? "high" : null,
+            outcome: malicious ? "control_abuse" : null,
+            governance: null,
+            model_id: null,
+          }],
+        }
+        : {
+          prediction: malicious ? "MALICIOUS" : "BENIGN",
+          score: malicious ? 0.99 : 0.01,
+          threshold: 0.5,
+          primary_outcome: malicious ? "control_abuse" : "benign",
+        },
+    );
   };
 
   const counter = { value: 0 };

@@ -168,7 +168,7 @@ SILMARIL_DEMO_BASE_URL="http://localhost:3001" node scripts/open-playground.mjs
 
 ## Event Mapping
 
-With no local `mode` and no legacy `block_malicious`, the classifier response mode selects the column below. If that response mode is missing or unrecognized, behavior matches Shadow. Warn and Block apply when the model prediction is exactly `MALICIOUS` or `governance.action` is exactly `block`.
+With no local `mode` and no legacy `block_malicious`, the classifier response mode selects the column below. If that response mode is missing or unrecognized, behavior matches Shadow. Warn and Block apply when the Firewall decision's `action` is anything other than `allow`.
 
 | OpenCode generation and hook | Classified text | Firewall hook | Shadow | Warn | Block |
 | --- | --- | --- | --- | --- | --- |
@@ -192,17 +192,17 @@ adapter reconstructs child history at idle.
 Every native event produces at most one classification, while the Firewall
 sequence cache owns conversation state from the incremental hook stream.
 
-The policy candidate is `prediction === "MALICIOUS"` or
-`governance.action === "block"`. Unknown or malformed governance actions do not
-block. Governance-only denials retain the model's original `BENIGN` prediction
-in logs and local evidence. Scores, thresholds, outcomes, missing predictions,
-and unknown predictions remain diagnostic. Each OpenCode
+The policy candidate is `action !== "allow"` on the SDK result. `source`,
+`confidence`, `severity`, `outcome`, and an attached governance decision are
+diagnostic and never create or cancel a candidate. A block whose `source` is
+`governance` uses governance-policy copy and is recorded in local evidence
+with a benign model prediction. Each OpenCode
 `sessionID` is sent as the exact conversation identity, so child sessions retain
 independent sequences. Stable message, part, and call identifiers produce
 content-sensitive request IDs for retry idempotency; events without one use the
 SDK-generated ID.
 
-Tool requests use SDK 0.8.2 typed governance resources. OpenCode 2 maps the
+Tool requests use SDK typed governance resources. OpenCode 2 maps the
 native effective tool ID to `{ kind: "tool", id }`. Its public Promise context
 does not expose independent MCP registry authority, and tool namespaces are
 generic and normalized, so the plugin never invents an `mcp_tool` parent from
@@ -215,8 +215,16 @@ Every successful classification emits one bounded `LocalProtectionEventV1`
 file under `~/Library/Application Support/Silmaril/Evidence/incoming`. Files
 are written privately through an atomic temporary rename. They contain opaque
 request and session fingerprints, the policy decision, native host action, and
-version provenance. They never contain the prompt, tool arguments, tool
-output, assistant text, API key, or classifier URL.
+version provenance. When the Firewall reports them, the decision's
+`confidence` (`very_low`, `low`, `medium`, `high`, `very_high`) and `severity`
+(`minimal`, `low`, `moderate`, `high`, `critical`) are recorded; `modelScore`
+and `modelThreshold` are no longer written. `provenance.modelVersion` records
+the decision's model identifier when the Firewall reports one, and
+`provenance.policyVersion` records the governance decision's policy version,
+or `opencode-plugin-policy-v1` when the decision carries no governance. Both
+are stripped of control and format characters and cut to 128 UTF-8 bytes.
+Events never contain the prompt, tool arguments, tool output, assistant text,
+API key, or classifier URL.
 
 Set `SILMARIL_LOCAL_EVENT_DIR` to override the incoming directory. If that is unset or blank and `SILMARIL_EVIDENCE_ROOT` is set, the directory is `<root>/incoming`.
 Evidence failures are fail-open and never alter OpenCode enforcement. Plugins
@@ -254,7 +262,7 @@ A pass comes from the exact rendered toast in both captures, command text in
 the captures, an owned SIGINT exit, and explicit evidence that no observed
 owned process remains.
 
-The package pins `@silmaril-security/sdk` to `0.8.2`, requires retained
+The package pins `@silmaril-security/sdk` to `1.0.0`, requires retained
 `@opencode-ai/plugin` hosts to be at least 1.18.22, develops against
 `opencode-ai` and `@opencode-ai/plugin` 1.19.5, and qualifies the actual
 `@opencode/cli`, `@opencode/plugin`, `@opencode/core`, and `@opencode/util`
